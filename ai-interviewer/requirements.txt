@@ -1,0 +1,23 @@
+# Privacy-First AI Interviewer — Python dependencies
+# Install inside a venv: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
+# ── Core pipeline ──────────────────────────────────────────────────────────────
+faster-whisper>=1.0.0          # local STT (CTranslate2 backend, CPU-friendly)
+gradio>=4.44.0                 # web UI with built-in gr.Audio mic component
+reportlab>=4.2.0               # PDF report generation (no browser dependency)
+requests>=2.32.0               # Ollama HTTP API calls
+
+# ── TTS ────────────────────────────────────────────────────────────────────────
+# piper-tts is published as a wheel; on some macOS versions the CLI binary
+# path approach is more reliable — see tts/speak.py for the fallback.
+piper-tts>=1.2.0
+
+# ── Testing ────────────────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-mock>=3.14.0
+
+# ── PDF text extraction (used in test_report.py) ──────────────────────────────
+pdfplumber>=0.11.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+numpy>=1.26.0                  # faster-whisper dependency
