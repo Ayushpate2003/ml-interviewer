@@ -61,6 +61,7 @@ def load_tts_model() -> None:
 
     # Attempt 1: Python API
     try:
+        # pyrefly: ignore [missing-import]
         from piper import PiperVoice  # noqa: PLC0415
 
         model_path = _ensure_voice_downloaded(_VOICE_NAME)

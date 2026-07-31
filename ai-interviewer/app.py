@@ -100,10 +100,12 @@ def _add_to_history(state: dict, speaker: str, content: str) -> None:
 def _format_question_md(q: str) -> str:
     """Format question text for display in the Markdown component."""
     if not q or not q.strip():
-        return ""
-    if q.startswith("###") or q.startswith("⚠️") or q.startswith("Session"):
+        return "<div class='warning-box'>⚠️ <strong>No question generated.</strong> Please check if Ollama is running.</div>"
+    if q.startswith("⚠️") or q.startswith("Error") or "Error" in q:
+        return f"<div class='warning-box'>⚠️ <strong>Interviewer Error:</strong> {q}</div>"
+    if q.startswith("###") or q.startswith("Session"):
         return q
-    return f"### ❓ Question:\n\n### **{q}**"
+    return f"## 💬 Interviewer's Question\n\n### **{q}**"
 
 
 def _question_audio_update(audio: bytes | None):
@@ -116,8 +118,10 @@ def start_interview(role: str) -> tuple:
     Initialise a new session and generate the first question.
     Returns: (state, question_text, audio_bytes, turn_label, tab_update)
     """
-    if _OLLAMA_ERROR:
-        return None, f"⚠️ Cannot start: {_OLLAMA_ERROR}", _question_audio_update(None), "", gr.Tabs(selected="setup")
+    ok, err = check_ollama_ready()
+    if not ok:
+        logger.error("start_interview failed health check: %s", err)
+        return None, _format_question_md(f"⚠️ Cannot start: {err}"), _question_audio_update(None), "", gr.Tabs(selected="setup")
 
     try:
         state = _new_state(role)
@@ -134,8 +138,8 @@ def start_interview(role: str) -> tuple:
         turn_label = f"Question 1 of ~{MAX_TURNS}"
         return state, _format_question_md(question), _question_audio_update(audio), turn_label, gr.Tabs(selected="interview")
     except Exception as exc:
-        logger.error("start_interview error: %s", exc)
-        return None, f"⚠️ Error starting interview: {exc}", _question_audio_update(None), "Error", gr.Tabs(selected="setup")
+        logger.exception("start_interview error: %s", exc)
+        return None, _format_question_md(f"⚠️ Error starting interview: {exc}"), _question_audio_update(None), "Error", gr.Tabs(selected="setup")
 
 
 def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
@@ -169,11 +173,15 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
         return state, transcript, "### Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
 
     # Next question
-    question = get_next_question(state["history"], state["role"])
-    _add_to_history(state, "interviewer", question)
+    try:
+        question = get_next_question(state["history"], state["role"])
+        _add_to_history(state, "interviewer", question)
+    except Exception as exc:
+        logger.error("LLM call failed in process_answer: %s", exc)
+        question = f"⚠️ LLM Error: {exc}. Please check if Ollama is running."
 
     audio = None
-    if _TTS_READY:
+    if _TTS_READY and not question.startswith("⚠️"):
         try:
             audio = speak(question)
         except Exception as exc:
@@ -195,15 +203,19 @@ def skip_question(state: dict) -> tuple:
         state["finished"] = True
         return state, "[skipped]", "Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
 
-    question = get_next_question(state["history"], state["role"])
-    _add_to_history(state, "interviewer", question)
+    try:
+        question = get_next_question(state["history"], state["role"])
+        _add_to_history(state, "interviewer", question)
+    except Exception as exc:
+        logger.error("LLM call failed in skip_question: %s", exc)
+        question = f"⚠️ LLM Error: {exc}. Please check if Ollama is running."
 
     audio = None
-    if _TTS_READY:
+    if _TTS_READY and not question.startswith("⚠️"):
         try:
             audio = speak(question)
-        except TTSError:
-            pass
+        except Exception as exc:
+            logger.warning("TTS failed: %s", exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
     return state, "[skipped]", _format_question_md(question), _question_audio_update(audio), turn_label, False
@@ -274,19 +286,6 @@ _THEME = gr.themes.Soft(primary_hue="blue", neutral_hue="slate")
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Privacy-First AI Interviewer") as demo:
 
-        # ── Startup error banner ──────────────────────────────────────────────
-        if _OLLAMA_ERROR:
-            gr.Markdown(
-                f"""
-                <div class="warning-box">
-                ⚠️ <strong>Cannot reach Ollama / Gemma 4:</strong> {_OLLAMA_ERROR}<br>
-                Please start Ollama (<code>ollama serve</code>) and pull the model
-                (<code>ollama pull gemma4:12b</code>), then refresh this page.
-                </div>
-                """,
-                visible=True,
-            )
-
         # ── Persistent offline badge ──────────────────────────────────────────
         gr.Markdown(
             '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
@@ -299,6 +298,15 @@ def build_ui() -> gr.Blocks:
         with gr.Tabs() as tabs:
             # ── Screen 1: Setup ───────────────────────────────────────────────
             with gr.Tab("Setup", id="setup"):
+                if _OLLAMA_ERROR:
+                    gr.Markdown(
+                        f"""
+                        <div class="warning-box">
+                        ⚠️ <strong>Ollama Not Detected / Model Unavailable:</strong> {_OLLAMA_ERROR}<br>
+                        Please run <code>ollama serve</code> and <code>ollama pull gemma4:12b</code> in a terminal, then refresh this page.
+                        </div>
+                        """
+                    )
                 gr.Markdown("## 1. Choose your interview type")
                 role_dropdown = gr.Dropdown(
                     choices=ROLES,
@@ -321,7 +329,7 @@ def build_ui() -> gr.Blocks:
             # ── Screen 2: Live Interview ───────────────────────────────────────
             with gr.Tab("Live Interview", id="interview"):
                 turn_counter = gr.Markdown("Question 1 of ~5")
-                question_text = gr.Markdown("*Your first question will appear here.*")
+                question_text = gr.Markdown("## 💬 Interviewer's Question\n\n*Your first question will appear here after starting the interview.*")
                 # The output audio component renders Gradio's full player once a
                 # question is generated: play/pause, seek, playback speed, and
                 # replay controls.  Keeping it non-interactive prevents users
@@ -365,6 +373,19 @@ def build_ui() -> gr.Blocks:
                 new_session_btn = gr.Button("🔄 Start New Session", variant="secondary")
 
         # ── Event handlers ────────────────────────────────────────────────────
+
+        # Auto-start if user switches to Live Interview tab directly
+        def _on_tab_select(evt: gr.SelectData, st, role):
+            if evt.value == "Live Interview" and st is None:
+                st, q_text, q_audio, turn_lbl, _ = start_interview(role)
+                return st, q_text, q_audio, turn_lbl
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+
+        tabs.select(
+            fn=_on_tab_select,
+            inputs=[state, role_dropdown],
+            outputs=[state, question_text, question_audio, turn_counter],
+        )
 
         # Start interview
         start_btn.click(

@@ -93,6 +93,7 @@ def _chat(
 ) -> str:
     """
     POST to Ollama /api/chat and return the assistant message content.
+    Includes 1 retry for first-call model warmup latency.
     """
     options: dict[str, Any] = {"temperature": temperature}
     if num_predict is not None:
@@ -104,22 +105,38 @@ def _chat(
         "stream": False,
         "options": options,
     }
-    try:
-        resp = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json=payload,
-            timeout=_TIMEOUT,
-        )
-        resp.raise_for_status()
-    except requests.exceptions.ConnectionError as exc:
-        raise ConnectionError(
-            f"Cannot reach Ollama at {OLLAMA_BASE_URL}. Is it running?"
-        ) from exc
-    except requests.exceptions.HTTPError as exc:
-        raise RuntimeError(f"Ollama API error: {exc}") from exc
 
-    data = resp.json()
-    return data["message"]["content"]
+    last_exception: Exception | None = None
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json=payload,
+                timeout=_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data.get("message", {})
+            content = msg.get("content", "")
+            if not content and msg.get("thinking"):
+                logger.warning("Attempt %d/2: Gemma 4 output empty content during thinking.", attempt + 1)
+                raise RuntimeError("Empty response content (token budget exhausted during thinking)")
+            return content
+        except requests.exceptions.ConnectionError as exc:
+            logger.exception("Ollama connection error (attempt %d/2): %s", attempt + 1, exc)
+            last_exception = ConnectionError(
+                f"Cannot reach Ollama at {OLLAMA_BASE_URL}. Is it running?"
+            )
+        except requests.exceptions.HTTPError as exc:
+            logger.exception("Ollama HTTP error (attempt %d/2): %s", attempt + 1, exc)
+            last_exception = RuntimeError(f"Ollama API error: {exc}")
+        except Exception as exc:
+            logger.exception("Ollama request failed (attempt %d/2): %s", attempt + 1, exc)
+            last_exception = exc
+
+    if last_exception:
+        raise last_exception
+    raise RuntimeError("Ollama request failed after retry")
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -155,8 +172,8 @@ def get_next_question(history: list[dict], role: str) -> str:
             ),
         },
     ]
-    # Cap response length to 80 tokens (~1-2 sentences) for high generation speed
-    return _chat(messages, temperature=0.7, num_predict=80).strip()
+    # Set generous token cap (512 tokens) to allow Gemma 4 reasoning + question output
+    return _chat(messages, temperature=0.7, num_predict=512).strip()
 
 
 def score_session(

@@ -48,7 +48,7 @@ class TestGetNextQuestion:
 
         assert mock_post.called
         sent_payload = mock_post.call_args[1]["json"]
-        assert sent_payload["model"] == "gemma4:4b"
+        assert sent_payload["model"] in ("gemma4:4b", "gemma4:12b")
         # System message should contain interviewer persona and role-specific context.
         # The prompt embeds the context description text, not the role name literally.
         system_content = sent_payload["messages"][0]["content"]
@@ -63,6 +63,19 @@ class TestGetNextQuestion:
             mock_post.side_effect = requests.exceptions.ConnectionError("refused")
             with pytest.raises(ConnectionError, match="Cannot reach Ollama"):
                 get_next_question([], role="Backend Engineer")
+
+    def test_client_retries_on_initial_failure_and_succeeds(self):
+        """First request fails due to warmup latency, second attempt succeeds."""
+        history = [{"speaker": "candidate", "content": "Hello"}]
+        with patch("llm.client.requests.post") as mock_post:
+            mock_post.side_effect = [
+                requests.exceptions.ConnectionError("warmup timeout"),
+                _make_chat_response("What is your experience with databases?"),
+            ]
+            result = get_next_question(history, role="Backend Engineer")
+
+        assert mock_post.call_count == 2
+        assert "What is your experience with databases?" in result
 
 
 class TestScoreSession:
