@@ -44,7 +44,7 @@ class TestGetNextQuestion:
 
         with patch("llm.client.requests.post") as mock_post:
             mock_post.return_value = _make_chat_response("What was the impact of that bug?")
-            result = get_next_question(history, role="Backend Engineer")
+            result, topic = get_next_question(history, role="Backend Engineer")
 
         assert mock_post.called
         sent_payload = mock_post.call_args[1]["json"]
@@ -72,7 +72,7 @@ class TestGetNextQuestion:
                 requests.exceptions.ConnectionError("warmup timeout"),
                 _make_chat_response("What is your experience with databases?"),
             ]
-            result = get_next_question(history, role="Backend Engineer")
+            result, topic = get_next_question(history, role="Backend Engineer")
 
         assert mock_post.call_count == 2
         assert "What is your experience with databases?" in result

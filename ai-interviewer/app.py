@@ -34,8 +34,12 @@ import gradio as gr
 from llm.client import check_ollama_ready, get_next_question, score_session
 from memory.db import add_turn, create_session, end_session, save_scores
 from report.generate_report import generate_report
+from stt.confidence import analyze_transcript_fluency
+from stt.gemma_audio import transcribe_native_gemma
 from stt.transcribe import TranscriptionError, load_stt_model, transcribe
+from stt.vad import check_end_of_speech, load_vad_model
 from tts.speak import TTSError, load_tts_model, speak
+from utils.resume import extract_resume_highlights
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -79,7 +83,7 @@ def _init_models():
 _init_models()
 
 # ── Session state helpers ──────────────────────────────────────────────────────
-def _new_state(role: str) -> dict:
+def _new_state(role: str, gemma_audio_all_turns: bool = False) -> dict:
     """Create a fresh session state dict stored in gr.State."""
     session_id = create_session(DB_PATH, role=role)
     return {
@@ -88,6 +92,7 @@ def _new_state(role: str) -> dict:
         "history": [],          # list of {speaker, content}
         "turn_index": 0,
         "finished": False,
+        "gemma_audio_all_turns": gemma_audio_all_turns,
     }
 
 
@@ -97,15 +102,17 @@ def _add_to_history(state: dict, speaker: str, content: str) -> None:
     add_turn(DB_PATH, session_id=state["session_id"], speaker=speaker, content=content)
 
 
-def _format_question_md(q: str) -> str:
-    """Format question text for display in the Markdown component."""
+def _format_question_md(q: str, topic: str | None = None) -> str:
+    """Format question text and optional probing chip for display in the Markdown component."""
     if not q or not q.strip():
         return "<div class='warning-box'>⚠️ <strong>No question generated.</strong> Please check if Ollama is running.</div>"
     if q.startswith("⚠️") or q.startswith("Error") or "Error" in q:
         return f"<div class='warning-box'>⚠️ <strong>Interviewer Error:</strong> {q}</div>"
     if q.startswith("###") or q.startswith("Session"):
         return q
-    return f"## 💬 Interviewer's Question\n\n### **{q}**"
+
+    chip_md = f"🔍 **Probing deeper on:** `{topic}`\n\n" if topic else ""
+    return f"## 💬 Interviewer's Question\n\n{chip_md}### **{q}**"
 
 
 def _question_audio_update(audio: bytes | None):
@@ -113,19 +120,40 @@ def _question_audio_update(audio: bytes | None):
     return gr.update(value=audio, visible=audio is not None)
 
 
-def start_interview(role: str) -> tuple:
+def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file: str | None = None) -> tuple:
     """
     Initialise a new session and generate the first question.
-    Returns: (state, question_text, audio_bytes, turn_label, tab_update)
+    Returns: (state, question_text, audio_bytes, turn_label, setup_error_update, resume_status_update, tab_update)
     """
     ok, err = check_ollama_ready()
     if not ok:
         logger.error("start_interview failed health check: %s", err)
-        return None, _format_question_md(f"⚠️ Cannot start: {err}"), _question_audio_update(None), "", gr.Tabs(selected="setup")
+        err_html = (
+            f'<div class="warning-box">'
+            f'⚠️ <strong>Ollama Not Detected / Model Unavailable:</strong> {err}<br>'
+            f'Please run <code>ollama serve</code> and <code>ollama pull gemma4:12b</code> in a terminal, then refresh.'
+            f'</div>'
+        )
+        return (
+            None,
+            _format_question_md(f"⚠️ Cannot start: {err}"),
+            _question_audio_update(None),
+            "",
+            gr.update(value=err_html, visible=True),
+            gr.update(visible=False),
+            gr.Tabs(selected="setup"),
+        )
 
     try:
-        state = _new_state(role)
-        question = get_next_question([], role)
+        state = _new_state(role, gemma_audio_all_turns)
+        resume_context = ""
+        resume_status = ""
+
+        if resume_file:
+            resume_context, resume_status = extract_resume_highlights(resume_file)
+            state["resume_context"] = resume_context
+
+        question, topic = get_next_question([], role, resume_context=resume_context)
         _add_to_history(state, "interviewer", question)
 
         audio = None
@@ -136,33 +164,83 @@ def start_interview(role: str) -> tuple:
                 logger.warning("TTS failed on first question: %s", exc)
 
         turn_label = f"Question 1 of ~{MAX_TURNS}"
-        return state, _format_question_md(question), _question_audio_update(audio), turn_label, gr.Tabs(selected="interview")
+        resume_status_update = gr.update(value=resume_status, visible=bool(resume_status))
+        return (
+            state,
+            _format_question_md(question, topic),
+            _question_audio_update(audio),
+            turn_label,
+            gr.update(visible=False),
+            resume_status_update,
+            gr.Tabs(selected="interview"),
+        )
     except Exception as exc:
         logger.exception("start_interview error: %s", exc)
-        return None, _format_question_md(f"⚠️ Error starting interview: {exc}"), _question_audio_update(None), "Error", gr.Tabs(selected="setup")
+        err_html = (
+            f'<div class="warning-box">'
+            f'⚠️ <strong>Error starting interview:</strong> {exc}<br>'
+            f'Please check if Ollama is running.'
+            f'</div>'
+        )
+        return (
+            None,
+            _format_question_md(f"⚠️ Error starting interview: {exc}"),
+            _question_audio_update(None),
+            "Error",
+            gr.update(value=err_html, visible=True),
+            gr.update(visible=False),
+            gr.Tabs(selected="setup"),
+        )
 
 
 def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
     """
     Process one candidate answer and return the next question.
-    Returns: (state, transcript_text, question_text, audio_bytes, turn_label, finish_flag)
+    Returns: (state, transcript_text, stt_badge, fluency_badge, question_text, audio_bytes, turn_label, finish_flag)
     """
     if state is None or state.get("finished"):
-        return state, "", "", _question_audio_update(None), "", True
+        return state, "", "⚡ STT Engine: Standby", "📊 Fluency Signal: Standby", "", _question_audio_update(None), "", True
 
     # Transcribe
     transcript = ""
+    stt_badge = "⚡ STT Engine: faster-whisper"
     if audio_input:
-        try:
-            transcript = transcribe(audio_input)
-        except TranscriptionError as exc:
-            logger.warning("TranscriptionError: %s", exc)
-            transcript = ""
+        use_gemma_native = (state.get("turn_index", 0) == 0) or state.get("gemma_audio_all_turns", False)
+        if use_gemma_native:
+            try:
+                transcript, stt_badge = transcribe_native_gemma(audio_input)
+            except Exception as exc:
+                logger.warning("Gemma native audio exception: %s. Falling back to faster-whisper.", exc)
+                try:
+                    transcript = transcribe(audio_input)
+                    stt_badge = "⚡ faster-whisper (fallback)"
+                except Exception as exc2:
+                    logger.warning("Fallback transcription error: %s", exc2)
+                    transcript = ""
+        else:
+            try:
+                transcript = transcribe(audio_input)
+                stt_badge = "⚡ STT Engine: faster-whisper"
+            except TranscriptionError as exc:
+                logger.warning("TranscriptionError: %s", exc)
+                transcript = ""
+
+    # Real-time fluency signal
+    _, _, fluency_badge = analyze_transcript_fluency(transcript)
 
     if not transcript.strip():
         # Silence / empty — prompt retry, no LLM call
         last_q = state["history"][-1]["content"] if state["history"] else ""
-        return state, "[I didn't catch that — please try again]", _format_question_md(last_q), _question_audio_update(None), f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}", False
+        return (
+            state,
+            "[I didn't catch that — please try again]",
+            stt_badge,
+            fluency_badge,
+            _format_question_md(last_q),
+            _question_audio_update(None),
+            f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}",
+            False,
+        )
 
     _add_to_history(state, "candidate", transcript)
     state["turn_index"] += 1
@@ -170,25 +248,35 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
     # End of session?
     if state["turn_index"] >= MAX_TURNS:
         state["finished"] = True
-        return state, transcript, "### Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
+        return (
+            state,
+            transcript,
+            stt_badge,
+            fluency_badge,
+            "### Session complete — generating your report…",
+            _question_audio_update(None),
+            f"Question {state['turn_index']} of {MAX_TURNS}",
+            True,
+        )
 
-    # Next question
+    # Next question (seed resume context only for turns 1 & 2)
     try:
-        question = get_next_question(state["history"], state["role"])
+        resume_ctx = state.get("resume_context") if state.get("turn_index", 0) <= 2 else None
+        question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in process_answer: %s", exc)
-        question = f"⚠️ LLM Error: {exc}. Please check if Ollama is running."
+        question, topic = f"⚠️ LLM Error: {exc}. Please check if Ollama is running.", None
 
     audio = None
     if _TTS_READY and not question.startswith("⚠️"):
         try:
             audio = speak(question)
         except Exception as exc:
-            logger.warning("TTS failed: %s", exc)
+            logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    return state, transcript, _format_question_md(question), _question_audio_update(audio), turn_label, False
+    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic), _question_audio_update(audio), turn_label, False
 
 
 def skip_question(state: dict) -> tuple:
@@ -204,11 +292,12 @@ def skip_question(state: dict) -> tuple:
         return state, "[skipped]", "Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
 
     try:
-        question = get_next_question(state["history"], state["role"])
+        resume_ctx = state.get("resume_context") if state.get("turn_index", 0) <= 2 else None
+        question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in skip_question: %s", exc)
-        question = f"⚠️ LLM Error: {exc}. Please check if Ollama is running."
+        question, topic = f"⚠️ LLM Error: {exc}. Please check if Ollama is running.", None
 
     audio = None
     if _TTS_READY and not question.startswith("⚠️"):
@@ -218,7 +307,7 @@ def skip_question(state: dict) -> tuple:
             logger.warning("TTS failed: %s", exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    return state, "[skipped]", _format_question_md(question), _question_audio_update(audio), turn_label, False
+    return state, "[skipped]", _format_question_md(question, topic), _question_audio_update(audio), turn_label, False
 
 
 def generate_final_report(state: dict) -> tuple:
@@ -298,15 +387,17 @@ def build_ui() -> gr.Blocks:
         with gr.Tabs() as tabs:
             # ── Screen 1: Setup ───────────────────────────────────────────────
             with gr.Tab("Setup", id="setup"):
-                if _OLLAMA_ERROR:
-                    gr.Markdown(
-                        f"""
-                        <div class="warning-box">
-                        ⚠️ <strong>Ollama Not Detected / Model Unavailable:</strong> {_OLLAMA_ERROR}<br>
-                        Please run <code>ollama serve</code> and <code>ollama pull gemma4:12b</code> in a terminal, then refresh this page.
-                        </div>
-                        """
-                    )
+                setup_error_box = gr.Markdown(
+                    f"""
+                    <div class="warning-box">
+                    ⚠️ <strong>Ollama Not Detected / Model Unavailable:</strong> {_OLLAMA_ERROR}<br>
+                    Please run <code>ollama serve</code> and <code>ollama pull gemma4:12b</code> in a terminal, then refresh this page.
+                    </div>
+                    """
+                    if _OLLAMA_ERROR
+                    else "",
+                    visible=bool(_OLLAMA_ERROR),
+                )
                 gr.Markdown("## 1. Choose your interview type")
                 role_dropdown = gr.Dropdown(
                     choices=ROLES,
@@ -314,7 +405,19 @@ def build_ui() -> gr.Blocks:
                     label="Interview Role / Domain",
                     interactive=True,
                 )
-                gr.Markdown("## 2. Test your microphone")
+                gr.Markdown("## 2. Options")
+                gemma_audio_checkbox = gr.Checkbox(
+                    label="🎙️ Enable Gemma 4 Native Audio Perception for ALL turns",
+                    value=False,
+                    info="Turn 1 uses Gemma 4 native audio by default. Check this to use Gemma 4 native audio for all turns.",
+                )
+                resume_file = gr.File(
+                    label="📄 Optional: Upload Resume or Job Description (.pdf or .txt)",
+                    file_types=[".pdf", ".txt", ".md"],
+                    type="filepath",
+                )
+                resume_status_box = gr.Markdown(visible=False)
+                gr.Markdown("## 3. Test your microphone")
                 mic_test = gr.Audio(
                     sources=["microphone"],
                     label="Record 2 seconds and listen back to confirm your mic works",
@@ -343,9 +446,12 @@ def build_ui() -> gr.Blocks:
                 )
                 gr.Markdown("---")
                 gr.Markdown("### Your Answer")
+                stt_badge_component = gr.Markdown("🎙️ **STT Engine:** Gemma 4 is listening directly (Turn 1)")
+                fluency_badge_component = gr.Markdown("📊 **Fluency Signal:** 🟢 Confident (Low fillers/hedging)")
+                vad_status = gr.Markdown("🎙️ **VAD Status:** Listening...")
                 answer_audio = gr.Audio(
                     sources=["microphone"],
-                    label="🎤 Click Record, speak your answer, then click Stop",
+                    label="🎤 Click Record, speak your answer (VAD auto-detects end of speech or click Stop)",
                     type="filepath",
                 )
                 transcript_box = gr.Textbox(
@@ -374,38 +480,62 @@ def build_ui() -> gr.Blocks:
 
         # ── Event handlers ────────────────────────────────────────────────────
 
+        # VAD end-of-speech status check
+        def _on_audio_change(audio):
+            if not audio:
+                return "🎙️ **VAD Status:** Listening..."
+            is_end, msg = check_end_of_speech(audio)
+            return f"**VAD Status:** {msg}"
+
+        answer_audio.change(
+            fn=_on_audio_change,
+            inputs=[answer_audio],
+            outputs=[vad_status],
+        )
+
         # Auto-start if user switches to Live Interview tab directly
-        def _on_tab_select(evt: gr.SelectData, st, role):
+        def _on_tab_select(evt: gr.SelectData, st, role, gemma_all, r_file):
             if evt.value == "Live Interview" and st is None:
-                st, q_text, q_audio, turn_lbl, _ = start_interview(role)
+                st, q_text, q_audio, turn_lbl, setup_err, r_status, _ = start_interview(role, gemma_all, r_file)
                 return st, q_text, q_audio, turn_lbl
             return gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
         tabs.select(
             fn=_on_tab_select,
-            inputs=[state, role_dropdown],
+            inputs=[state, role_dropdown, gemma_audio_checkbox, resume_file],
             outputs=[state, question_text, question_audio, turn_counter],
         )
 
         # Start interview
         start_btn.click(
             fn=start_interview,
-            inputs=[role_dropdown],
-            outputs=[state, question_text, question_audio, turn_counter, tabs],
+            inputs=[role_dropdown, gemma_audio_checkbox, resume_file],
+            outputs=[state, question_text, question_audio, turn_counter, setup_error_box, resume_status_box, tabs],
         )
 
         # Submit answer
         def _on_submit(audio, st):
-            st, transcript, question, audio_out, turn_lbl, finished = process_answer(audio, st)
+            st, transcript, stt_badge, fluency_badge, question, audio_out, turn_lbl, finished = process_answer(audio, st)
             finish_visible = gr.update(visible=finished)
             submit_visible = gr.update(visible=not finished)
             skip_visible = gr.update(visible=not finished)
-            return st, transcript, question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible
+            return st, transcript, stt_badge, fluency_badge, question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible
 
         submit_btn.click(
             fn=_on_submit,
             inputs=[answer_audio, state],
-            outputs=[state, transcript_box, question_text, question_audio, turn_counter, finish_btn, submit_btn, skip_btn],
+            outputs=[
+                state,
+                transcript_box,
+                stt_badge_component,
+                fluency_badge_component,
+                question_text,
+                question_audio,
+                turn_counter,
+                finish_btn,
+                submit_btn,
+                skip_btn,
+            ],
         )
 
         # Skip question

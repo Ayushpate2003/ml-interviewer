@@ -23,7 +23,12 @@ from typing import Any
 
 import requests
 
-from llm.parser import ParseError, build_fallback_scorecard, parse_score_json
+from llm.parser import (
+    ParseError,
+    build_fallback_scorecard,
+    parse_question_and_tool_call,
+    parse_score_json,
+)
 from llm.prompts import (
     SCORING_JSON_SCHEMA,
     build_scoring_prompt,
@@ -38,6 +43,11 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 MODEL_TAG = os.environ.get("OLLAMA_MODEL", "gemma4:4b")
 _ACTIVE_MODEL_TAG = MODEL_TAG
 _TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "300"))  # seconds
+
+
+def get_active_model_tag() -> str:
+    """Return the currently active Gemma model tag."""
+    return _ACTIVE_MODEL_TAG
 
 
 # ── Health check (called at startup by app.py) ────────────────────────────────
@@ -141,7 +151,11 @@ def _chat(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def get_next_question(history: list[dict], role: str) -> str:
+def get_next_question(
+    history: list[dict],
+    role: str,
+    resume_context: str | None = None,
+) -> tuple[str, str | None]:
     """
     Generate the next interview question given the conversation history.
 
@@ -151,13 +165,15 @@ def get_next_question(history: list[dict], role: str) -> str:
         Running turn list; each dict has ``speaker`` and ``content`` keys.
     role : str
         Interview role (e.g. "Backend Engineer").
+    resume_context : str | None
+        Optional candidate background/resume highlights to tailor questions.
 
     Returns
     -------
-    str
-        The next question text (plain, no prose preamble).
+    tuple[str, str | None]
+        (question_text, followup_topic_or_None)
     """
-    system_prompt = build_system_prompt(role)
+    system_prompt = build_system_prompt(role, resume_context=resume_context)
     transcript = format_history_for_prompt(history)
 
     messages = [
@@ -173,7 +189,8 @@ def get_next_question(history: list[dict], role: str) -> str:
         },
     ]
     # Set generous token cap (512 tokens) to allow Gemma 4 reasoning + question output
-    return _chat(messages, temperature=0.7, num_predict=512).strip()
+    raw_res = _chat(messages, temperature=0.7, num_predict=512).strip()
+    return parse_question_and_tool_call(raw_res)
 
 
 def score_session(

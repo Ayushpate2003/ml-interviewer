@@ -79,6 +79,55 @@ def parse_score_json(
     return _fallback_or_raise(raw, fallback, reason="no valid JSON found in model output")
 
 
+def parse_question_and_tool_call(raw: str) -> tuple[str, str | None]:
+    """
+    Parse per-turn question text and extract optional tool call topic (flag_followup_topic).
+
+    Returns
+    -------
+    tuple[str, str | None]
+        (clean_question_text, followup_topic_or_None)
+    """
+    if not raw or not raw.strip():
+        return "", None
+
+    topic = None
+    cleaned_text = raw
+
+    try:
+        tool_match = re.search(
+            r'\{\s*"name"\s*:\s*"flag_followup_topic"\s*,\s*"arguments"\s*:\s*\{\s*"topic"\s*:\s*"([^"]+)"',
+            raw,
+            re.IGNORECASE,
+        )
+        if tool_match:
+            topic = tool_match.group(1).strip()
+            cleaned_text = re.sub(
+                r'\{\s*"name"\s*:\s*"flag_followup_topic".*?\}',
+                "",
+                raw,
+                flags=re.DOTALL | re.IGNORECASE,
+            ).strip()
+        else:
+            topic_match = re.search(r'"topic"\s*:\s*"([^"]+)"', raw, re.IGNORECASE)
+            if topic_match and "flag_followup_topic" in raw.lower():
+                topic = topic_match.group(1).strip()
+                cleaned_text = re.sub(
+                    r'\{[^{}]*flag_followup_topic[^{}]*\}',
+                    "",
+                    raw,
+                    flags=re.DOTALL | re.IGNORECASE,
+                ).strip()
+    except Exception as exc:
+        logger.warning("Error parsing tool call topic: %s", exc)
+
+    cleaned_text = re.sub(r"```[a-z]*", "", cleaned_text).replace("```", "").strip()
+    if not cleaned_text and raw:
+        cleaned_text = raw.strip()
+
+    return cleaned_text, topic
+
+
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 def _try_parse(text: str) -> dict[str, Any] | None:

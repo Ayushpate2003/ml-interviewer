@@ -26,28 +26,42 @@ def test_format_question_md():
     assert "warning-box" in empty_formatted
 
 
+@patch("app.check_ollama_ready")
 @patch("app.get_next_question")
 @patch("app.speak")
-def test_start_interview(mock_speak, mock_get_next):
-    mock_get_next.return_value = "Tell me about your past experience."
+def test_start_interview(mock_speak, mock_get_next, mock_check):
+    mock_check.return_value = (True, "")
+    mock_get_next.return_value = ("Tell me about your past experience.", None)
     mock_speak.return_value = b"fake-audio-bytes"
 
-    state, q_text, audio_update, turn_lbl, tab_update = start_interview("Backend Engineer")
+    state, q_text, audio_update, turn_lbl, setup_err, resume_status, tab_update = start_interview("Backend Engineer")
 
     assert state is not None
     assert state["role"] == "Backend Engineer"
     assert state["turn_index"] == 0
     assert "Tell me about your past experience." in q_text
     assert turn_lbl == "Question 1 of ~5"
-    mock_get_next.assert_called_once_with([], "Backend Engineer")
+    assert tab_update.selected == "interview"
+    mock_get_next.assert_called_once_with([], "Backend Engineer", resume_context="")
 
 
+@patch("app.check_ollama_ready")
+def test_start_interview_failure_stays_on_setup(mock_check):
+    mock_check.return_value = (False, "Ollama down")
+
+    state, q_text, audio_update, turn_lbl, setup_err, resume_status, tab_update = start_interview("Backend Engineer")
+
+    assert state is None
+    assert "Cannot start" in q_text
+    assert tab_update.selected == "setup"
+
+
+@patch("app.transcribe_native_gemma")
 @patch("app.get_next_question")
 @patch("app.speak")
-@patch("app.transcribe")
-def test_process_answer_multi_turn(mock_transcribe, mock_speak, mock_get_next):
-    mock_transcribe.return_value = "I worked on caching."
-    mock_get_next.return_value = "How did you invalidate cache keys?"
+def test_process_answer_multi_turn(mock_speak, mock_get_next, mock_gemma_transcribe):
+    mock_gemma_transcribe.return_value = ("I worked on caching.", "🎙️ Gemma 4 Native Audio Perception")
+    mock_get_next.return_value = ("How did you invalidate cache keys?", "Cache Invalidation")
     mock_speak.return_value = b"audio2"
 
     initial_state = {
@@ -58,19 +72,22 @@ def test_process_answer_multi_turn(mock_transcribe, mock_speak, mock_get_next):
         "finished": False,
     }
 
-    state, transcript, q_text, audio_update, turn_lbl, finished = process_answer("fake_audio.wav", initial_state)
+    state, transcript, stt_badge, fluency_badge, q_text, audio_update, turn_lbl, finished = process_answer("fake_audio.wav", initial_state)
 
     assert state["turn_index"] == 1
     assert transcript == "I worked on caching."
+    assert "Gemma 4 Native Audio Perception" in stt_badge
+    assert "Fluency Signal" in fluency_badge
     assert "How did you invalidate cache keys?" in q_text
+    assert "Probing deeper on" in q_text
     assert turn_lbl == "Question 2 of ~5"
     assert not finished
 
 
-@patch("app.transcribe")
+@patch("app.transcribe_native_gemma")
 @patch("app.get_next_question")
-def test_process_answer_handles_llm_error(mock_get_next, mock_transcribe):
-    mock_transcribe.return_value = "Candidate response text."
+def test_process_answer_handles_llm_error(mock_get_next, mock_gemma_transcribe):
+    mock_gemma_transcribe.return_value = ("Candidate response text.", "🎙️ Gemma 4 Native Audio Perception")
     mock_get_next.side_effect = RuntimeError("Ollama server down")
 
     initial_state = {
@@ -81,7 +98,7 @@ def test_process_answer_handles_llm_error(mock_get_next, mock_transcribe):
         "finished": False,
     }
 
-    state, transcript, q_text, audio_update, turn_lbl, finished = process_answer("fake_audio.wav", initial_state)
+    state, transcript, stt_badge, fluency_badge, q_text, audio_update, turn_lbl, finished = process_answer("fake_audio.wav", initial_state)
 
     assert "warning-box" in q_text
     assert "Interviewer Error" in q_text
@@ -91,7 +108,7 @@ def test_process_answer_handles_llm_error(mock_get_next, mock_transcribe):
 @patch("app.get_next_question")
 @patch("app.speak")
 def test_skip_question_advances(mock_speak, mock_get_next):
-    mock_get_next.return_value = "What is ACID?"
+    mock_get_next.return_value = ("What is ACID?", None)
     mock_speak.return_value = b"audio_acid"
 
     initial_state = {

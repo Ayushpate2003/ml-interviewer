@@ -98,7 +98,7 @@ REQUIRED_DIMENSIONS = [
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
-def build_system_prompt(role: str) -> str:
+def build_system_prompt(role: str, resume_context: str | None = None) -> str:
     """
     Return the system prompt for the per-turn question-generation call.
 
@@ -107,13 +107,29 @@ def build_system_prompt(role: str) -> str:
     role : str
         One of the keys in ``_ROLE_CONTEXT``, or any free-text role name.
         If the role is unrecognised, generic guidance is used.
+    resume_context : str | None
+        Optional candidate background/resume highlights to tailor questions.
     """
     role_ctx = _ROLE_CONTEXT.get(role, f"This is a {role} interview.")
+    resume_block = ""
+    if resume_context:
+        resume_block = (
+            "\nCANDIDATE BACKGROUND / RESUME HIGHLIGHTS:\n"
+            f"{resume_context}\n"
+            "Tailor your questions specifically around these background skills and project experiences.\n"
+        )
+    tool_instructions = (
+        "\nIf the candidate's response mentions a key architectural detail, technology, or trade-off that warrants probing deeper, "
+        "you may optionally emit a tool call before your question: "
+        '{"name": "flag_followup_topic", "arguments": {"topic": "<2-4 word topic>", "reason": "<short reason>"}}\n'
+    )
     return (
         f"{_BASE_PERSONA}\n\n"
-        f"Role context: {role_ctx}\n\n"
-        "When generating a question, output ONLY the question text — "
-        "no preamble, no 'Sure!', no meta-commentary."
+        f"Role context: {role_ctx}\n"
+        f"{resume_block}"
+        f"{tool_instructions}\n"
+        "When generating a question, output ONLY the question text (and optional tool call) — "
+        "no preface, no greetings."
     )
 
 

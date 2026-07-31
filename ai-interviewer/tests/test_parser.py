@@ -11,7 +11,30 @@ from __future__ import annotations
 
 import pytest
 
-from llm.parser import ParseError, parse_score_json
+from llm.parser import ParseError, parse_question_and_tool_call, parse_score_json
+
+
+class TestParseQuestionAndToolCall:
+
+    def test_plain_question_without_tool_call(self):
+        raw = "What is the difference between TCP and UDP?"
+        q, topic = parse_question_and_tool_call(raw)
+        assert q == "What is the difference between TCP and UDP?"
+        assert topic is None
+
+    def test_question_with_tool_call(self):
+        raw = (
+            '{"name": "flag_followup_topic", "arguments": {"topic": "Redis Cluster", "reason": "Mentions high availability"}}\n'
+            'How do you handle split-brain scenarios in your Redis Cluster?'
+        )
+        q, topic = parse_question_and_tool_call(raw)
+        assert topic == "Redis Cluster"
+        assert "How do you handle split-brain scenarios" in q
+
+    def test_malformed_tool_call_graceful_fallback(self):
+        raw = "flag_followup_topic invalid json block\nCan you explain your database schema?"
+        q, topic = parse_question_and_tool_call(raw)
+        assert "Can you explain your database schema?" in q
 
 
 class TestParseScoreJson:
