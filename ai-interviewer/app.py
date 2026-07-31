@@ -102,8 +102,8 @@ def _add_to_history(state: dict, speaker: str, content: str) -> None:
     add_turn(DB_PATH, session_id=state["session_id"], speaker=speaker, content=content)
 
 
-def _format_question_md(q: str, topic: str | None = None) -> str:
-    """Format question text and optional probing chip for display in the Markdown component."""
+def _format_question_md(q: str, topic: str | None = None, is_resume_anchored: bool = False) -> str:
+    """Format question text, resume badge, and optional probing chip for display in the Markdown component."""
     if not q or not q.strip():
         return "<div class='warning-box'>⚠️ <strong>No question generated.</strong> Please check if Ollama is running.</div>"
     if q.startswith("⚠️") or q.startswith("Error") or "Error" in q:
@@ -111,8 +111,14 @@ def _format_question_md(q: str, topic: str | None = None) -> str:
     if q.startswith("###") or q.startswith("Session"):
         return q
 
-    chip_md = f"🔍 **Probing deeper on:** `{topic}`\n\n" if topic else ""
-    return f"## 💬 Interviewer's Question\n\n{chip_md}### **{q}**"
+    badges = []
+    if is_resume_anchored:
+        badges.append("📄 **Based on your resume**")
+    if topic:
+        badges.append(f"🔍 **Probing deeper on:** `{topic}`")
+
+    badge_md = ("\n\n".join(badges) + "\n\n") if badges else ""
+    return f"## 💬 Interviewer's Question\n\n{badge_md}### **{q}**"
 
 
 def _question_audio_update(audio: bytes | None):
@@ -165,9 +171,10 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
 
         turn_label = f"Question 1 of ~{MAX_TURNS}"
         resume_status_update = gr.update(value=resume_status, visible=bool(resume_status))
+        is_anchored = bool(state.get("resume_context"))
         return (
             state,
-            _format_question_md(question, topic),
+            _format_question_md(question, topic, is_resume_anchored=is_anchored),
             _question_audio_update(audio),
             turn_label,
             gr.update(visible=False),
@@ -231,12 +238,13 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
     if not transcript.strip():
         # Silence / empty — prompt retry, no LLM call
         last_q = state["history"][-1]["content"] if state["history"] else ""
+        is_anchored = bool(state.get("resume_context"))
         return (
             state,
             "[I didn't catch that — please try again]",
             stt_badge,
             fluency_badge,
-            _format_question_md(last_q),
+            _format_question_md(last_q, is_resume_anchored=is_anchored),
             _question_audio_update(None),
             f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}",
             False,
@@ -259,9 +267,9 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
             True,
         )
 
-    # Next question (seed resume context only for turns 1 & 2)
+    # Next question (seed resume context across all turns)
     try:
-        resume_ctx = state.get("resume_context") if state.get("turn_index", 0) <= 2 else None
+        resume_ctx = state.get("resume_context")
         question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
@@ -276,7 +284,8 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
             logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic), _question_audio_update(audio), turn_label, False
+    is_anchored = bool(state.get("resume_context"))
+    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
 
 def skip_question(state: dict) -> tuple:
@@ -292,7 +301,7 @@ def skip_question(state: dict) -> tuple:
         return state, "[skipped]", "Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
 
     try:
-        resume_ctx = state.get("resume_context") if state.get("turn_index", 0) <= 2 else None
+        resume_ctx = state.get("resume_context")
         question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
@@ -307,13 +316,14 @@ def skip_question(state: dict) -> tuple:
             logger.warning("TTS failed: %s", exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    return state, "[skipped]", _format_question_md(question, topic), _question_audio_update(audio), turn_label, False
+    is_anchored = bool(state.get("resume_context"))
+    return state, "[skipped]", _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
 
 def generate_final_report(state: dict) -> tuple:
     """Score the session with Gemma 4 and build the PDF report."""
     if state is None:
-        return None, "No active session.", None, gr.update()
+        return None, "No active session.", None, None, None, gr.update()
 
     end_session(state["session_id"], DB_PATH)
 
@@ -328,10 +338,54 @@ def generate_final_report(state: dict) -> tuple:
     }
     pdf_path = generate_report(session_data)
 
-    # Build a markdown scorecard summary
+    # Build a markdown scorecard summary and Plotly figures
     summary_md = _format_scorecard_md(scorecard)
+    fig_radar, fig_bar = _create_report_charts(scorecard)
 
-    return state, summary_md, str(pdf_path), gr.Tabs(selected="report")
+    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report")
+
+
+def _create_report_charts(scorecard: dict):
+    dims = scorecard.get("dimensions") or []
+    if not dims:
+        return None, None
+
+    dim_names = [d.get("name", "").replace("_", " ").title() for d in dims]
+    dim_scores = [float(d.get("score") or 0.0) for d in dims]
+
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    # Radar chart
+    fig_radar = go.Figure(
+        data=go.Scatterpolar(
+            r=dim_scores + [dim_scores[0]],
+            theta=dim_names + [dim_names[0]],
+            fill="toself",
+            name="Rubric Score",
+            line_color="#6366F1",
+        )
+    )
+    fig_radar.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+        showlegend=False,
+        margin=dict(l=30, r=30, t=30, b=30),
+        title="5-Dimension Rubric Radar Chart",
+    )
+
+    # Bar chart
+    fig_bar = px.bar(
+        x=dim_names,
+        y=dim_scores,
+        labels={"x": "Dimension", "y": "Score (0-5)"},
+        title="Rubric Dimension Breakdown",
+        color=dim_scores,
+        color_continuous_scale="Viridis",
+        range_y=[0, 5.5],
+    )
+    fig_bar.update_layout(margin=dict(l=30, r=30, t=30, b=30))
+
+    return fig_radar, fig_bar
 
 
 def _format_scorecard_md(scorecard: dict) -> str:
@@ -473,9 +527,20 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("Report", id="report"):
                 gr.Markdown("## 📊 Your Interview Report")
                 scorecard_md = gr.Markdown("*Scorecard will appear here after your session.*")
+
+                with gr.Row():
+                    radar_plot = gr.Plot(label="🕸️ 5-Dimension Rubric Radar Chart")
+                    bar_plot = gr.Plot(label="📊 Dimension Scores Bar Chart")
+
                 with gr.Accordion("📃 Full Transcript", open=False):
                     transcript_full = gr.Markdown("*Transcript will appear here.*")
+
                 pdf_download = gr.File(label="⬇️ Download PDF Report", visible=False)
+
+                gr.Markdown("---")
+                gr.Markdown("### 🌐 Live Visual Companion View")
+                gr.HTML('<iframe src="http://localhost:8501" style="width:100%; height:750px; border:1px solid #334155; border-radius:12px;"></iframe>')
+
                 new_session_btn = gr.Button("🔄 Start New Session", variant="secondary")
 
         # ── Event handlers ────────────────────────────────────────────────────
@@ -519,7 +584,54 @@ def build_ui() -> gr.Blocks:
             finish_visible = gr.update(visible=finished)
             submit_visible = gr.update(visible=not finished)
             skip_visible = gr.update(visible=not finished)
-            return st, transcript, stt_badge, fluency_badge, question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible
+            audio_reset = gr.update(value=None)
+
+            if finished:
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
+                transcript_md = "\n\n".join(
+                    f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
+                    for t in (st or {}).get("history", [])
+                )
+                pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
+                return (
+                    st,
+                    transcript,
+                    stt_badge,
+                    fluency_badge,
+                    question,
+                    audio_out,
+                    turn_lbl,
+                    finish_visible,
+                    submit_visible,
+                    skip_visible,
+                    audio_reset,
+                    scorecard,
+                    fig_radar,
+                    fig_bar,
+                    transcript_md,
+                    pdf_visible,
+                    tab_update,
+                )
+
+            return (
+                st,
+                transcript,
+                stt_badge,
+                fluency_badge,
+                question,
+                audio_out,
+                turn_lbl,
+                finish_visible,
+                submit_visible,
+                skip_visible,
+                audio_reset,
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+                gr.skip(),
+            )
 
         submit_btn.click(
             fn=_on_submit,
@@ -535,6 +647,13 @@ def build_ui() -> gr.Blocks:
                 finish_btn,
                 submit_btn,
                 skip_btn,
+                answer_audio,
+                scorecard_md,
+                radar_plot,
+                bar_plot,
+                transcript_full,
+                pdf_download,
+                tabs,
             ],
         )
 
@@ -544,29 +663,54 @@ def build_ui() -> gr.Blocks:
             finish_visible = gr.update(visible=finished)
             submit_visible = gr.update(visible=not finished)
             skip_visible = gr.update(visible=not finished)
-            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible
+
+            if finished:
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
+                transcript_md = "\n\n".join(
+                    f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
+                    for t in (st or {}).get("history", [])
+                )
+                pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
+                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, tab_update
+
+            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
         skip_btn.click(
             fn=_on_skip,
             inputs=[state],
-            outputs=[state, transcript_box, question_text, question_audio, turn_counter, finish_btn, submit_btn, skip_btn],
+            outputs=[
+                state,
+                transcript_box,
+                question_text,
+                question_audio,
+                turn_counter,
+                finish_btn,
+                submit_btn,
+                skip_btn,
+                scorecard_md,
+                radar_plot,
+                bar_plot,
+                transcript_full,
+                pdf_download,
+                tabs,
+            ],
         )
 
         # Finish & generate report
         def _on_finish(st):
-            st, scorecard, pdf_path, tab_update = generate_final_report(st)
+            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
             # Build transcript text for expandable section
             transcript_md = "\n\n".join(
                 f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
                 for t in (st or {}).get("history", [])
             )
             pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-            return st, scorecard, transcript_md, pdf_visible, tab_update
+            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, tab_update
 
         finish_btn.click(
             fn=_on_finish,
             inputs=[state],
-            outputs=[state, scorecard_md, transcript_full, pdf_download, tabs],
+            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, tabs],
         )
 
         # New session → reset to Setup tab

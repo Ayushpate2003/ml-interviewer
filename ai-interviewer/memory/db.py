@@ -195,3 +195,12 @@ def get_session(
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_all_sessions(db: str | Path = _DEFAULT_DB) -> list[dict[str, Any]]:
+    """Retrieve all sessions ordered by started_at DESC (most recent first)."""
+    conn = _get_conn(db)
+    cur = conn.execute("SELECT * FROM sessions ORDER BY started_at DESC")
+    rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return rows
