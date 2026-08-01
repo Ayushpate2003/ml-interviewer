@@ -15,7 +15,7 @@ Edge cases (userflow.md §3):
   - Skip → [skipped] placeholder added to history.
   - Mic permission denied → troubleshooting hint shown.
   - Long answers → no truncation; Gemma 4 context window handles it.
-  - Refresh → new session (resume is a stretch goal, out of MVP scope).
+  - Refresh → new session.
 
 Startup check (system-design.md §3):
   Ollama reachability and model availability are verified before the UI loads.
@@ -28,11 +28,12 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from typing import Any
 
 import gradio as gr
 
 from llm.client import check_ollama_ready, get_next_question, score_session
-from memory.db import add_turn, create_session, end_session, save_scores
+from memory.db import add_turn, create_session, end_session, increment_turns_completed, save_scores
 from report.generate_report import generate_report
 from stt.confidence import analyze_transcript_fluency
 from stt.gemma_audio import transcribe_native_gemma
@@ -45,7 +46,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-MAX_TURNS = int(os.environ.get("MAX_TURNS", "5"))
+MAX_TURNS = 5
 DB_PATH = Path(__file__).parent / "data" / "interview_sessions.db"
 
 ROLES = ["Backend Engineer", "HR Round", "System Design"]
@@ -83,16 +84,33 @@ def _init_models():
 _init_models()
 
 # ── Session state helpers ──────────────────────────────────────────────────────
-def _new_state(role: str, gemma_audio_all_turns: bool = False) -> dict:
+def _new_state(
+    role: str,
+    gemma_audio_all_turns: bool = False,
+    *,
+    resume_mode: str = "generic",
+    resume_context: str = "",
+) -> dict:
     """Create a fresh session state dict stored in gr.State."""
-    session_id = create_session(DB_PATH, role=role)
+    session_id = create_session(
+        DB_PATH,
+        role=role,
+        max_turns=MAX_TURNS,
+        resume_mode=resume_mode,
+        resume_context=resume_context,
+    )
     return {
         "session_id": session_id,
         "role": role,
         "history": [],          # list of {speaker, content}
         "turn_index": 0,
+        "turns_completed": 0,
+        "max_turns": MAX_TURNS,
         "finished": False,
         "gemma_audio_all_turns": gemma_audio_all_turns,
+        "resume_mode": resume_mode,
+        "resume_context": resume_context,
+        "pending_transcript": "",
     }
 
 
@@ -126,6 +144,42 @@ def _question_audio_update(audio: bytes | None):
     return gr.update(value=audio, visible=audio is not None)
 
 
+def _normalize_audio_input(audio_input: Any) -> bytes | str | None:
+    """
+    Normalize Gradio audio payloads to bytes or filepath.
+    Supports filepath strings, bytes, dict wrappers, and numpy tuple payloads.
+    """
+    if audio_input is None:
+        return None
+    if isinstance(audio_input, (bytes, str)):
+        return audio_input
+    if isinstance(audio_input, dict):
+        maybe_path = audio_input.get("path") or audio_input.get("name")
+        maybe_bytes = audio_input.get("bytes")
+        if isinstance(maybe_bytes, bytes):
+            return maybe_bytes
+        if isinstance(maybe_path, str):
+            return maybe_path
+        return None
+    if isinstance(audio_input, tuple) and len(audio_input) == 2:
+        try:
+            import io
+            import numpy as np
+            import soundfile as sf
+
+            sample_rate, samples = audio_input
+            arr = np.asarray(samples)
+            if arr.size == 0:
+                return b""
+            buf = io.BytesIO()
+            sf.write(buf, arr, int(sample_rate), format="WAV")
+            return buf.getvalue()
+        except Exception:
+            logger.exception("Failed to normalize tuple audio payload")
+            return None
+    return None
+
+
 def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file: str | None = None) -> tuple:
     """
     Initialise a new session and generate the first question.
@@ -151,13 +205,24 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
         )
 
     try:
-        state = _new_state(role, gemma_audio_all_turns)
         resume_context = ""
-        resume_status = ""
-
+        resume_mode = "generic"
         if resume_file:
-            resume_context, resume_status = extract_resume_highlights(resume_file)
-            state["resume_context"] = resume_context
+            resume_context, _ = extract_resume_highlights(resume_file)
+            if resume_context.strip():
+                resume_mode = "resume"
+
+        state = _new_state(
+            role,
+            gemma_audio_all_turns,
+            resume_mode=resume_mode,
+            resume_context=resume_context,
+        )
+
+        if resume_mode == "resume":
+            resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context for all {MAX_TURNS} turns."
+        else:
+            resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {MAX_TURNS} turns."
 
         question, topic = get_next_question([], role, resume_context=resume_context)
         _add_to_history(state, "interviewer", question)
@@ -169,9 +234,9 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
             except Exception as exc:
                 logger.warning("TTS failed on first question: %s", exc)
 
-        turn_label = f"Question 1 of ~{MAX_TURNS}"
+        turn_label = f"Question 1 of {MAX_TURNS}"
         resume_status_update = gr.update(value=resume_status, visible=bool(resume_status))
-        is_anchored = bool(state.get("resume_context"))
+        is_anchored = state.get("resume_mode") == "resume"
         return (
             state,
             _format_question_md(question, topic, is_resume_anchored=is_anchored),
@@ -200,60 +265,124 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
         )
 
 
-def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
+def _transcribe_candidate_audio(audio_input: Any, state: dict) -> tuple[str, str]:
+    """Transcribe answer audio with Gemma-native-first strategy and fallback."""
+    payload = _normalize_audio_input(audio_input)
+    if not payload:
+        return "", "⚡ STT Engine: Standby"
+
+    use_gemma_native = (state.get("turn_index", 0) == 0) or state.get("gemma_audio_all_turns", False)
+    if use_gemma_native:
+        try:
+            return transcribe_native_gemma(payload)
+        except Exception:
+            logger.exception("Gemma native audio failed; trying faster-whisper fallback")
+            try:
+                return transcribe(payload), "⚡ faster-whisper (fallback)"
+            except Exception:
+                logger.exception("Fallback faster-whisper transcription failed")
+                return "", "⚠️ STT Engine: Error (see logs)"
+
+    try:
+        return transcribe(payload), "⚡ STT Engine: faster-whisper"
+    except TranscriptionError:
+        logger.exception("faster-whisper transcription failed")
+        return "", "⚠️ STT Engine: Error (see logs)"
+
+
+def process_recording_stop(audio_input: Any, state: dict) -> tuple:
     """
-    Process one candidate answer and return the next question.
+    Stop-recording entry point for transcript + live analysis.
+    Returns: (state, transcript, stt_badge, fluency_badge, vad_status, submit_error)
+    """
+    try:
+        if state is None or state.get("finished"):
+            return (
+                state,
+                "",
+                "⚡ STT Engine: Standby",
+                "📊 Fluency Signal: Standby",
+                "🎙️ **VAD Status:** Listening...",
+                gr.update(value="", visible=False),
+            )
+
+        vad_msg = "🎙️ Listening..."
+        normalized = _normalize_audio_input(audio_input)
+        if normalized:
+            try:
+                _, vad_msg = check_end_of_speech(normalized)
+            except Exception:
+                logger.exception("VAD analysis failed; continuing without blocking transcript")
+                vad_msg = "🎙️ Listening (VAD unavailable)"
+
+        transcript, stt_badge = _transcribe_candidate_audio(audio_input, state)
+
+        try:
+            try:
+                _, _, fluency_badge = analyze_transcript_fluency(transcript)
+            except Exception:
+                logger.exception("Fluency analysis failed during submit; continuing with transcript")
+                fluency_badge = "📊 **Fluency Signal:** ⚪ Unavailable"
+        except Exception:
+            logger.exception("Fluency analysis failed; returning transcript anyway")
+            fluency_badge = "📊 **Fluency Signal:** ⚪ Unavailable"
+
+        state["pending_transcript"] = transcript.strip()
+        if transcript.strip():
+            submit_error = gr.update(value="", visible=False)
+        else:
+            submit_error = gr.update(
+                value="⚠️ No transcript captured yet. Please record again before submitting.",
+                visible=True,
+            )
+
+        return state, transcript, stt_badge, fluency_badge, f"🎙️ **VAD Status:** {vad_msg}", submit_error
+    except Exception:
+        logger.exception("Stop-recording pipeline failed with unhandled exception")
+        return (
+            state,
+            "",
+            "⚠️ STT Engine: Error (see logs)",
+            "📊 **Fluency Signal:** ⚪ Unavailable",
+            "🎙️ **VAD Status:** Error",
+            gr.update(
+                value="⚠️ Recording processing failed unexpectedly. Please try recording again.",
+                visible=True,
+            ),
+        )
+
+
+def process_answer(transcript_input: str | None, state: dict) -> tuple:
+    """
+    Submit one transcript and return the next question.
     Returns: (state, transcript_text, stt_badge, fluency_badge, question_text, audio_bytes, turn_label, finish_flag)
     """
     if state is None or state.get("finished"):
         return state, "", "⚡ STT Engine: Standby", "📊 Fluency Signal: Standby", "", _question_audio_update(None), "", True
 
-    # Transcribe
-    transcript = ""
-    stt_badge = "⚡ STT Engine: faster-whisper"
-    if audio_input:
-        use_gemma_native = (state.get("turn_index", 0) == 0) or state.get("gemma_audio_all_turns", False)
-        if use_gemma_native:
-            try:
-                transcript, stt_badge = transcribe_native_gemma(audio_input)
-            except Exception as exc:
-                logger.warning("Gemma native audio exception: %s. Falling back to faster-whisper.", exc)
-                try:
-                    transcript = transcribe(audio_input)
-                    stt_badge = "⚡ faster-whisper (fallback)"
-                except Exception as exc2:
-                    logger.warning("Fallback transcription error: %s", exc2)
-                    transcript = ""
-        else:
-            try:
-                transcript = transcribe(audio_input)
-                stt_badge = "⚡ STT Engine: faster-whisper"
-            except TranscriptionError as exc:
-                logger.warning("TranscriptionError: %s", exc)
-                transcript = ""
-
-    # Real-time fluency signal
+    transcript = (transcript_input or state.get("pending_transcript") or "").strip()
     _, _, fluency_badge = analyze_transcript_fluency(transcript)
+    stt_badge = "⚡ STT Engine: Ready"
 
-    if not transcript.strip():
-        # Silence / empty — prompt retry, no LLM call
+    if not transcript:
         last_q = state["history"][-1]["content"] if state["history"] else ""
-        is_anchored = bool(state.get("resume_context"))
+        is_anchored = state.get("resume_mode") == "resume"
         return (
             state,
-            "[I didn't catch that — please try again]",
+            "",
             stt_badge,
             fluency_badge,
             _format_question_md(last_q, is_resume_anchored=is_anchored),
             _question_audio_update(None),
-            f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}",
+            f"Question {state['turn_index'] + 1} of {MAX_TURNS}",
             False,
         )
 
     _add_to_history(state, "candidate", transcript)
-    state["turn_index"] += 1
+    state["pending_transcript"] = ""
+    state["turns_completed"] = increment_turns_completed(state["session_id"], DB_PATH)
+    state["turn_index"] = state["turns_completed"]
 
-    # End of session?
     if state["turn_index"] >= MAX_TURNS:
         state["finished"] = True
         return (
@@ -267,7 +396,6 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
             True,
         )
 
-    # Next question (seed resume context across all turns)
     try:
         resume_ctx = state.get("resume_context")
         question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
@@ -283,8 +411,8 @@ def process_answer(audio_input: bytes | str | None, state: dict) -> tuple:
         except Exception as exc:
             logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
-    turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    is_anchored = bool(state.get("resume_context"))
+    turn_label = f"Question {state['turn_index'] + 1} of {MAX_TURNS}"
+    is_anchored = state.get("resume_mode") == "resume"
     return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
 
@@ -294,7 +422,8 @@ def skip_question(state: dict) -> tuple:
         return state, "", "", _question_audio_update(None), "", True
 
     _add_to_history(state, "candidate", "[skipped]")
-    state["turn_index"] += 1
+    state["turns_completed"] = increment_turns_completed(state["session_id"], DB_PATH)
+    state["turn_index"] = state["turns_completed"]
 
     if state["turn_index"] >= MAX_TURNS:
         state["finished"] = True
@@ -315,8 +444,8 @@ def skip_question(state: dict) -> tuple:
         except Exception as exc:
             logger.warning("TTS failed: %s", exc)
 
-    turn_label = f"Question {state['turn_index'] + 1} of ~{MAX_TURNS}"
-    is_anchored = bool(state.get("resume_context"))
+    turn_label = f"Question {state['turn_index'] + 1} of {MAX_TURNS}"
+    is_anchored = state.get("resume_mode") == "resume"
     return state, "[skipped]", _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
 
@@ -427,7 +556,7 @@ _THEME = gr.themes.Soft(primary_hue="blue", neutral_hue="slate")
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="Privacy-First AI Interviewer") as demo:
+    with gr.Blocks(title="Privacy-First AI Interviewer", theme=_THEME, css=_CSS) as demo:
 
         # ── Persistent offline badge ──────────────────────────────────────────
         gr.Markdown(
@@ -466,7 +595,7 @@ def build_ui() -> gr.Blocks:
                     info="Turn 1 uses Gemma 4 native audio by default. Check this to use Gemma 4 native audio for all turns.",
                 )
                 resume_file = gr.File(
-                    label="📄 Optional: Upload Resume or Job Description (.pdf or .txt)",
+                    label="📄 Upload Resume / JD (.pdf, .txt, .md) — enables resume-grounded questioning",
                     file_types=[".pdf", ".txt", ".md"],
                     type="filepath",
                 )
@@ -485,7 +614,7 @@ def build_ui() -> gr.Blocks:
 
             # ── Screen 2: Live Interview ───────────────────────────────────────
             with gr.Tab("Live Interview", id="interview"):
-                turn_counter = gr.Markdown("Question 1 of ~5")
+                turn_counter = gr.Markdown("Question 1 of 5")
                 question_text = gr.Markdown("## 💬 Interviewer's Question\n\n*Your first question will appear here after starting the interview.*")
                 # The output audio component renders Gradio's full player once a
                 # question is generated: play/pause, seek, playback speed, and
@@ -514,6 +643,7 @@ def build_ui() -> gr.Blocks:
                     lines=4,
                     placeholder="Transcript will appear here after you stop recording…",
                 )
+                submit_error_box = gr.Markdown(visible=False)
                 with gr.Row():
                     submit_btn = gr.Button("✅ Submit Answer", variant="primary")
                     skip_btn = gr.Button("⏭ Skip Question", variant="secondary")
@@ -545,17 +675,14 @@ def build_ui() -> gr.Blocks:
 
         # ── Event handlers ────────────────────────────────────────────────────
 
-        # VAD end-of-speech status check
-        def _on_audio_change(audio):
-            if not audio:
-                return "🎙️ **VAD Status:** Listening..."
-            is_end, msg = check_end_of_speech(audio)
-            return f"**VAD Status:** {msg}"
+        # Stop-recording pipeline: transcript + optional signals.
+        def _on_audio_change(audio, st):
+            return process_recording_stop(audio, st)
 
         answer_audio.change(
             fn=_on_audio_change,
-            inputs=[answer_audio],
-            outputs=[vad_status],
+            inputs=[answer_audio, state],
+            outputs=[state, transcript_box, stt_badge_component, fluency_badge_component, vad_status, submit_error_box],
         )
 
         # Auto-start if user switches to Live Interview tab directly
@@ -579,12 +706,37 @@ def build_ui() -> gr.Blocks:
         )
 
         # Submit answer
-        def _on_submit(audio, st):
-            st, transcript, stt_badge, fluency_badge, question, audio_out, turn_lbl, finished = process_answer(audio, st)
+        def _on_submit(transcript_text, st):
+            st, transcript, stt_badge, fluency_badge, question, audio_out, turn_lbl, finished = process_answer(transcript_text, st)
             finish_visible = gr.update(visible=finished)
             submit_visible = gr.update(visible=not finished)
             skip_visible = gr.update(visible=not finished)
             audio_reset = gr.update(value=None)
+
+            if not transcript.strip():
+                return (
+                    st,
+                    transcript,
+                    stt_badge,
+                    fluency_badge,
+                    question,
+                    audio_out,
+                    turn_lbl,
+                    finish_visible,
+                    submit_visible,
+                    skip_visible,
+                    audio_reset,
+                    gr.skip(),
+                    gr.skip(),
+                    gr.skip(),
+                    gr.skip(),
+                    gr.skip(),
+                    gr.update(
+                        value="⚠️ Transcript is empty. Please record a response before submitting.",
+                        visible=True,
+                    ),
+                    gr.skip(),
+                )
 
             if finished:
                 st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
@@ -610,6 +762,7 @@ def build_ui() -> gr.Blocks:
                     fig_bar,
                     transcript_md,
                     pdf_visible,
+                    gr.update(value="", visible=False),
                     tab_update,
                 )
 
@@ -630,12 +783,13 @@ def build_ui() -> gr.Blocks:
                 gr.skip(),
                 gr.skip(),
                 gr.skip(),
+                gr.update(value="", visible=False),
                 gr.skip(),
             )
 
         submit_btn.click(
             fn=_on_submit,
-            inputs=[answer_audio, state],
+            inputs=[transcript_box, state],
             outputs=[
                 state,
                 transcript_box,
@@ -653,6 +807,7 @@ def build_ui() -> gr.Blocks:
                 bar_plot,
                 transcript_full,
                 pdf_download,
+                submit_error_box,
                 tabs,
             ],
         )
@@ -671,9 +826,9 @@ def build_ui() -> gr.Blocks:
                     for t in (st or {}).get("history", [])
                 )
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, tab_update
+                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update
 
-            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip()
+            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.update(value="", visible=False), gr.skip()
 
         skip_btn.click(
             fn=_on_skip,
@@ -692,6 +847,7 @@ def build_ui() -> gr.Blocks:
                 bar_plot,
                 transcript_full,
                 pdf_download,
+                submit_error_box,
                 tabs,
             ],
         )
@@ -705,12 +861,12 @@ def build_ui() -> gr.Blocks:
                 for t in (st or {}).get("history", [])
             )
             pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, tab_update
+            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update
 
         finish_btn.click(
             fn=_on_finish,
             inputs=[state],
-            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, tabs],
+            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, submit_error_box, tabs],
         )
 
         # New session → reset to Setup tab
@@ -726,10 +882,8 @@ def build_ui() -> gr.Blocks:
 if __name__ == "__main__":
     ui = build_ui()
     ui.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=7860,
         share=False,
         show_error=True,
-        theme=_THEME,
-        css=_CSS,
     )

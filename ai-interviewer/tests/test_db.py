@@ -19,6 +19,7 @@ from memory.db import (
     get_scores,
     get_session,
     get_turns,
+    increment_turns_completed,
     save_scores,
 )
 
@@ -112,3 +113,13 @@ class TestScores:
         assert session is not None
         assert session["role"] == "HR Round"
         assert session["session_id"] == session_id
+        assert session["turns_completed"] == 0
+        assert session["max_turns"] == 5
+
+    def test_increment_turns_completed(self, tmp_db: Path):
+        session_id = create_session(tmp_db, role="Backend Engineer")
+        assert increment_turns_completed(session_id, tmp_db) == 1
+        assert increment_turns_completed(session_id, tmp_db) == 2
+        session = get_session(session_id, tmp_db)
+        assert session is not None
+        assert session["turns_completed"] == 2

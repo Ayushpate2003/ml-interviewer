@@ -2,7 +2,7 @@
 utils/resume.py
 ---------------
 Resume & Job Description text extraction and Gemma 4 skill highlight extraction.
-Extracts top technical skills and project highlights to seed Question 1 & 2.
+Extracts top technical skills and project highlights to ground all interview turns.
 """
 
 from __future__ import annotations

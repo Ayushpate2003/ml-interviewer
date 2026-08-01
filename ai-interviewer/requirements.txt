@@ -6,6 +6,8 @@ faster-whisper>=1.0.0          # local STT (CTranslate2 backend, CPU-friendly)
 gradio>=4.44.0                 # web UI with built-in gr.Audio mic component
 reportlab>=4.2.0               # PDF report generation (no browser dependency)
 requests>=2.32.0               # Ollama HTTP API calls
+huggingface_hub<1.0            # Gradio 4.x runtime compatibility (HfFolder import)
+pydantic<2.11                  # Avoid Gradio 4.44 schema regression with newer Pydantic
 
 # ── TTS ────────────────────────────────────────────────────────────────────────
 # piper-tts is published as a wheel; on some macOS versions the CLI binary
@@ -21,3 +23,4 @@ pdfplumber>=0.11.0
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 numpy>=1.26.0                  # faster-whisper dependency
+soundfile>=0.13.1              # required by stt/gemma_audio.py

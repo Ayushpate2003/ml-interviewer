@@ -43,8 +43,28 @@ def _get_conn(db: str | Path) -> sqlite3.Connection:
     # Apply schema (CREATE TABLE IF NOT EXISTS — idempotent)
     schema_sql = _SCHEMA_FILE.read_text()
     conn.executescript(schema_sql)
+    _ensure_schema_upgrades(conn)
     conn.commit()
     return conn
+
+
+def _ensure_schema_upgrades(conn: sqlite3.Connection) -> None:
+    """
+    Apply additive schema upgrades for existing DB files created before
+    newer columns were introduced.
+    """
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+    }
+    if "turns_completed" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN turns_completed INTEGER DEFAULT 0")
+    if "max_turns" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN max_turns INTEGER DEFAULT 5")
+    if "resume_mode" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN resume_mode TEXT DEFAULT 'generic'")
+    if "resume_context" not in cols:
+        conn.execute("ALTER TABLE sessions ADD COLUMN resume_context TEXT DEFAULT ''")
 
 
 def _now_iso() -> str:
@@ -53,7 +73,14 @@ def _now_iso() -> str:
 
 # ── Public CRUD ───────────────────────────────────────────────────────────────
 
-def create_session(db: str | Path = _DEFAULT_DB, role: str = "") -> str:
+def create_session(
+    db: str | Path = _DEFAULT_DB,
+    role: str = "",
+    *,
+    max_turns: int = 5,
+    resume_mode: str = "generic",
+    resume_context: str = "",
+) -> str:
     """
     Create a new interview session row.
 
@@ -66,8 +93,12 @@ def create_session(db: str | Path = _DEFAULT_DB, role: str = "") -> str:
     conn = _get_conn(db)
     with conn:
         conn.execute(
-            "INSERT INTO sessions (session_id, role, started_at) VALUES (?, ?, ?)",
-            (session_id, role, _now_iso()),
+            (
+                "INSERT INTO sessions "
+                "(session_id, role, turns_completed, max_turns, resume_mode, resume_context, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ),
+            (session_id, role, 0, max_turns, resume_mode, resume_context, _now_iso()),
         )
     conn.close()
     logger.info("Created session %s (role=%s)", session_id, role)
@@ -204,3 +235,24 @@ def get_all_sessions(db: str | Path = _DEFAULT_DB) -> list[dict[str, Any]]:
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
+
+
+def increment_turns_completed(
+    session_id: str, db: str | Path = _DEFAULT_DB
+) -> int:
+    """
+    Increment and return the session's turns_completed counter.
+    """
+    conn = _get_conn(db)
+    with conn:
+        conn.execute(
+            "UPDATE sessions SET turns_completed = COALESCE(turns_completed, 0) + 1 WHERE session_id = ?",
+            (session_id,),
+        )
+        cur = conn.execute(
+            "SELECT turns_completed FROM sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cur.fetchone()
+    conn.close()
+    return int(row["turns_completed"]) if row else 0

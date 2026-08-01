@@ -117,10 +117,15 @@ def build_system_prompt(role: str, resume_context: str | None = None) -> str:
             "\nCANDIDATE BACKGROUND / RESUME HIGHLIGHTS:\n"
             f"{resume_context}\n"
             "INSTRUCTIONS FOR RESUME PERSONALIZATION:\n"
-            "1. Continually inform and ground your questions in the candidate's specific resume skills, tools, and past projects.\n"
+            "1. Every question in this session must be grounded in a specific resume detail.\n"
             f"2. Combine the candidate's resume items with the target role context ({role_ctx}).\n"
             "3. Do NOT repeat the exact same resume detail or project as the anchor for more than 2 consecutive questions.\n"
-            "4. Reference specific resume content naturally (e.g. 'You mentioned working with X...', 'Building on your experience with Y...').\n"
+            "4. Explicitly reference resume content naturally (e.g. 'You mentioned working with X...', 'Building on your experience with Y...').\n"
+        )
+    else:
+        resume_block = (
+            "\nNO RESUME CONTEXT PROVIDED.\n"
+            "Use a generic role-based interview flow while still avoiding repeated question anchors.\n"
         )
     tool_instructions = (
         "\nIf the candidate's response mentions a key architectural detail, technology, or trade-off that warrants probing deeper, "
