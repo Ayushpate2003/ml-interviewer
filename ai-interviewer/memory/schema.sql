@@ -27,3 +27,11 @@ CREATE TABLE IF NOT EXISTS scores (
     score           INTEGER,
     justification   TEXT
 );
+
+CREATE TABLE IF NOT EXISTS ats_scores (
+    session_id       TEXT PRIMARY KEY REFERENCES sessions(session_id),
+    score            INTEGER,
+    matched_keywords TEXT,
+    missing_keywords TEXT,
+    suggestions      TEXT
+);

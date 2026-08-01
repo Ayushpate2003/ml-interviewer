@@ -33,7 +33,15 @@ from typing import Any
 import gradio as gr
 
 from llm.client import check_ollama_ready, get_next_question, score_session
-from memory.db import add_turn, create_session, end_session, increment_turns_completed, save_scores
+from memory.db import (
+    add_turn,
+    create_session,
+    end_session,
+    get_ats_score,
+    increment_turns_completed,
+    save_ats_score,
+    save_scores,
+)
 from report.generate_report import generate_report
 from stt.confidence import analyze_transcript_fluency
 from stt.gemma_audio import transcribe_native_gemma
@@ -287,8 +295,9 @@ def start_interview(
         )
 
         if resume_file:
-            raw_txt = extract_text_from_file(resume_file)
-            state["ats_info"] = calculate_ats_score(raw_txt, role)
+            ats_info = calculate_ats_score(resume_file, role)
+            state["ats_info"] = ats_info
+            save_ats_score(state["session_id"], ats_info, DB_PATH)
 
         if resume_mode == "resume":
             resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context for all {max_turns} turns."
@@ -598,11 +607,16 @@ def generate_final_report(state: dict) -> tuple:
     scorecard = score_session(state["history"], state["session_id"], state["role"])
     save_scores(DB_PATH, state["session_id"], scorecard.get("dimensions", []))
 
+    ats_info = state.get("ats_info") or get_ats_score(state["session_id"], DB_PATH)
+    if ats_info and ats_info.get("score") is not None:
+        save_ats_score(state["session_id"], ats_info, DB_PATH)
+
     session_data = {
         "session_id": state["session_id"],
         "role": state["role"],
         "turns": state["history"],
         "scorecard": scorecard,
+        "ats_info": ats_info,
     }
     pdf_path = generate_report(session_data)
 
@@ -610,7 +624,13 @@ def generate_final_report(state: dict) -> tuple:
     summary_md = _format_scorecard_md(scorecard)
     fig_radar, fig_bar = _create_report_charts(scorecard)
 
-    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report")
+    if ats_info and ats_info.get("formatted_md"):
+        ats_report_md = f"## 🎯 Resume ATS Compatibility\n\n{ats_info['formatted_md']}"
+        ats_report_update = gr.update(value=ats_report_md, visible=True)
+    else:
+        ats_report_update = gr.update(value="", visible=False)
+
+    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report"), ats_report_update
 
 
 def _create_report_charts(scorecard: dict):
@@ -766,6 +786,8 @@ def build_ui() -> gr.Blocks:
                     type="filepath",
                 )
                 resume_status_box = gr.Markdown(visible=False)
+                with gr.Accordion("📊 Resume ATS Score", open=True, visible=False) as ats_accordion:
+                    ats_score_box = gr.Markdown("")
                 gr.Markdown("## 3. Test your microphone")
                 mic_test = gr.Audio(
                     sources=["microphone"],
@@ -825,6 +847,7 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("Report", id="report"):
                 gr.Markdown("## 📊 Your Interview Report")
                 scorecard_md = gr.Markdown("*Scorecard will appear here after your session.*")
+                ats_report_box = gr.Markdown(visible=False)
 
                 with gr.Row():
                     radar_plot = gr.Plot(label="🕸️ 5-Dimension Rubric Radar Chart")
@@ -874,22 +897,41 @@ def build_ui() -> gr.Blocks:
         # Auto-detect role & extract highlights on resume upload
         def _on_resume_upload(file_path, current_role):
             if not file_path:
-                return gr.update(), gr.update(value="", visible=False), None, gr.update(value="", visible=False), gr.update(visible=False)
+                return (
+                    gr.update(),
+                    gr.update(value="", visible=False),
+                    None,
+                    gr.update(value="", visible=False),
+                    gr.update(visible=False),
+                    gr.update(value="", visible=False),
+                    gr.update(visible=False),
+                )
             highlights, detected_role, status_notice = detect_resume_role_and_highlights(file_path, ROLES)
             selected_role = detected_role if detected_role else current_role
 
-            raw_txt = extract_text_from_file(file_path)
-            ats_info = calculate_ats_score(raw_txt, selected_role)
-            if ats_info.get("formatted_md"):
-                status_notice += f"\n\n{ats_info['formatted_md']}"
+            try:
+                ats_info = calculate_ats_score(file_path, selected_role)
+            except Exception as exc:
+                logger.warning("ATS scoring failed: %s", exc)
+                ats_info = {"score": None, "formatted_md": "⚠️ ATS scoring unavailable for this file"}
 
             status_update = gr.update(value=status_notice, visible=bool(status_notice))
-            return selected_role, status_update, detected_role, gr.update(value="", visible=False), gr.update(visible=False)
+            mismatch_update = gr.update(value="", visible=False)
+            mismatch_btn_update = gr.update(visible=False)
+
+            if ats_info.get("formatted_md"):
+                ats_md_update = gr.update(value=ats_info["formatted_md"], visible=True)
+                ats_acc_update = gr.update(visible=True)
+            else:
+                ats_md_update = gr.update(value="", visible=False)
+                ats_acc_update = gr.update(visible=False)
+
+            return selected_role, status_update, detected_role, mismatch_update, mismatch_btn_update, ats_md_update, ats_acc_update
 
         resume_file.change(
             fn=_on_resume_upload,
             inputs=[resume_file, role_dropdown],
-            outputs=[role_dropdown, resume_status_box, detected_role_state, role_mismatch_box, switch_role_btn],
+            outputs=[role_dropdown, resume_status_box, detected_role_state, role_mismatch_box, switch_role_btn, ats_score_box, ats_accordion],
         )
 
         # Role dropdown manual selection change check against detected_role
@@ -958,7 +1000,7 @@ def build_ui() -> gr.Blocks:
                 )
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
                 transcript_md = "\n\n".join(
                     f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
                     for t in (st or {}).get("history", [])
@@ -983,6 +1025,7 @@ def build_ui() -> gr.Blocks:
                     pdf_visible,
                     gr.update(value="", visible=False),
                     tab_update,
+                    ats_report_update,
                 )
 
             return (
@@ -1003,6 +1046,7 @@ def build_ui() -> gr.Blocks:
                 gr.skip(),
                 gr.skip(),
                 gr.update(value="", visible=False),
+                gr.skip(),
                 gr.skip(),
             )
 
@@ -1028,6 +1072,7 @@ def build_ui() -> gr.Blocks:
                 pdf_download,
                 submit_error_box,
                 tabs,
+                ats_report_box,
             ],
         )
 
@@ -1039,15 +1084,15 @@ def build_ui() -> gr.Blocks:
             skip_visible = gr.update(visible=not finished)
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
                 transcript_md = "\n\n".join(
                     f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
                     for t in (st or {}).get("history", [])
                 )
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update
+                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
 
-            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.update(value="", visible=False), gr.skip()
+            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.update(value="", visible=False), gr.skip(), gr.skip()
 
         skip_btn.click(
             fn=_on_skip,
@@ -1068,24 +1113,24 @@ def build_ui() -> gr.Blocks:
                 pdf_download,
                 submit_error_box,
                 tabs,
+                ats_report_box,
             ],
         )
 
         # Finish & generate report
         def _on_finish(st):
-            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update = generate_final_report(st)
-            # Build transcript text for expandable section
+            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
             transcript_md = "\n\n".join(
                 f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
                 for t in (st or {}).get("history", [])
             )
             pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update
+            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
 
         finish_btn.click(
             fn=_on_finish,
             inputs=[state],
-            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, submit_error_box, tabs],
+            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, submit_error_box, tabs, ats_report_box],
         )
 
         # New session → reset to Setup tab

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -34,9 +35,13 @@ ROLE_KEYWORDS = {
 }
 
 
-def calculate_ats_score(resume_text: str | None, role: str = "Backend Engineer") -> dict:
+def calculate_ats_score(
+    resume_file_or_text: str | Path | None,
+    role: str = "Backend Engineer",
+) -> dict:
     """
-    Calculate ATS match percentage and keyword breakdown locally and offline.
+    Calculate ATS match percentage and keyword breakdown locally and offline
+    using ats-resume-checker with fallback.
 
     Returns
     -------
@@ -49,7 +54,7 @@ def calculate_ats_score(resume_text: str | None, role: str = "Backend Engineer")
             "formatted_md": str
         }
     """
-    if not resume_text or len(resume_text.strip()) < 20:
+    if not resume_file_or_text:
         return {
             "score": None,
             "matched": [],
@@ -58,17 +63,61 @@ def calculate_ats_score(resume_text: str | None, role: str = "Backend Engineer")
             "formatted_md": "",
         }
 
+    role_jd_map = {
+        "Backend Engineer": "Backend Engineer proficient in Python, Java, SQL, PostgreSQL, REST APIs, Microservices, Docker, Kubernetes, System Design, Caching, Git, CI/CD, Distributed Systems.",
+        "System Design": "System Design Architect specializing in Scalability, Load Balancing, Caching, Sharding, Microservices, Message Queues, Fault Tolerance, Latency, Throughput, Database Indexing.",
+        "HR Round": "HR Round candidate demonstrating Leadership, Teamwork, Communication, Conflict Resolution, Problem Solving, Adaptability, Collaboration, Agile Project Management.",
+    }
+    jd_text = role_jd_map.get(role, f"{role} role requiring domain expertise and technical skills.")
+
+    try:
+        path_obj = Path(str(resume_file_or_text))
+        if path_obj.exists() and path_obj.is_file():
+            import ats_resume_checker
+            res = ats_resume_checker.analyze_resume(str(path_obj), jd_text)
+            score = int(round(res.get("ats_score", 0)))
+            matched = res.get("matched_keywords", [])
+            missing = res.get("missing_keywords", [])
+            suggestions = res.get("suggestions", [])
+        else:
+            return _calculate_ats_score_fallback(str(resume_file_or_text), role)
+    except Exception as exc:
+        logger.warning("ats-resume-checker failed: %s; using local fallback matcher", exc)
+        return _calculate_ats_score_fallback(str(resume_file_or_text), role)
+
+    matched_str = ", ".join(matched[:8]) if matched else "None"
+    missing_str = ", ".join(missing[:8]) if missing else "None"
+    sug_str = suggestions[0] if suggestions else "No specific suggestions."
+
+    formatted_md = f"""### 🎯 Resume ATS Score: **{score}%** Match for *{role}*
+- **Matched Keywords ({len(matched)}):** `{matched_str}`
+- **Missing Keywords ({len(missing)}):** `{missing_str}`
+- **ATS Suggestion:** {sug_str}"""
+
+    return {
+        "score": score,
+        "matched": matched,
+        "missing": missing,
+        "suggestions": suggestions,
+        "formatted_md": formatted_md,
+    }
+
+
+def _calculate_ats_score_fallback(resume_text: str, role: str) -> dict:
+    if not resume_text or len(resume_text.strip()) < 20:
+        return {
+            "score": None,
+            "matched": [],
+            "missing": [],
+            "suggestions": [],
+            "formatted_md": "⚠️ ATS scoring unavailable for this file",
+        }
+
     keywords = ROLE_KEYWORDS.get(role, ROLE_KEYWORDS["Backend Engineer"])
     text_lower = resume_text.lower()
 
-    matched = []
-    missing = []
-
-    for kw in keywords:
-        if kw.lower() in text_lower:
-            matched.append(kw)
-        else:
-            missing.append(kw)
+    matched = [kw for kw in keywords if kw.lower() in text_lower]
+    missing = [kw for kw in keywords if kw.lower() not in text_lower]
 
     total = len(keywords)
     score = round((len(matched) / total) * 100) if total > 0 else 0
@@ -85,7 +134,7 @@ def calculate_ats_score(resume_text: str | None, role: str = "Backend Engineer")
     matched_str = ", ".join(matched[:8]) if matched else "None"
     missing_str = ", ".join(missing[:8]) if missing else "None"
 
-    formatted_md = f"""### 🎯 ATS Resume Score: **{score}%** Match for *{role}*
+    formatted_md = f"""### 🎯 Resume ATS Score: **{score}%** Match for *{role}*
 - **Matched Keywords ({len(matched)}):** `{matched_str}`
 - **Missing Keywords ({len(missing)}):** `{missing_str}`
 - **ATS Suggestion:** {suggestions[0]}"""

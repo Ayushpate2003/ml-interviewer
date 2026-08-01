@@ -87,7 +87,7 @@ def test_full_5_question_session_e2e(mock_score, mock_q):
     assert state["finished"] is True
 
     # 4. Generate final report
-    state, summary_md, fig_radar, fig_bar, pdf_path, _ = generate_final_report(state)
+    state, summary_md, fig_radar, fig_bar, pdf_path, *rest = generate_final_report(state)
     assert summary_md is not None
     assert "overall_score" in summary_md.lower() or "overall score" in summary_md.lower()
     assert fig_radar is not None
@@ -110,7 +110,7 @@ def test_3x_back_to_back_full_sessions(mock_score, mock_q):
         state, _, _, _, _, _, _, finished = process_answer(f"Final answer for run {run}", state)
         assert finished
 
-        state, summary_md, fig_radar, fig_bar, pdf_path, _ = generate_final_report(state)
+        state, summary_md, fig_radar, fig_bar, pdf_path, *rest = generate_final_report(state)
         assert fig_radar is not None
         assert fig_bar is not None
         assert pdf_path.endswith(".pdf")

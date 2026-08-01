@@ -66,6 +66,18 @@ def _ensure_schema_upgrades(conn: sqlite3.Connection) -> None:
     if "resume_context" not in cols:
         conn.execute("ALTER TABLE sessions ADD COLUMN resume_context TEXT DEFAULT ''")
 
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ats_scores (
+            session_id       TEXT PRIMARY KEY REFERENCES sessions(session_id),
+            score            INTEGER,
+            matched_keywords TEXT,
+            missing_keywords TEXT,
+            suggestions      TEXT
+        )
+        """
+    )
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -256,3 +268,69 @@ def increment_turns_completed(
         row = cur.fetchone()
     conn.close()
     return int(row["turns_completed"]) if row else 0
+
+
+def save_ats_score(
+    session_id: str,
+    ats_data: dict[str, Any] | None,
+    db: str | Path = _DEFAULT_DB,
+) -> None:
+    """Save or update ATS score analysis in SQLite tied to session_id."""
+    if not ats_data or ats_data.get("score") is None:
+        return
+    import json
+    score = ats_data.get("score")
+    matched = json.dumps(ats_data.get("matched", []))
+    missing = json.dumps(ats_data.get("missing", []))
+    suggestions = json.dumps(ats_data.get("suggestions", []))
+
+    conn = _get_conn(db)
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ats_scores (session_id, score, matched_keywords, missing_keywords, suggestions) VALUES (?, ?, ?, ?, ?)",
+            (session_id, score, matched, missing, suggestions),
+        )
+    conn.close()
+
+
+def get_ats_score(
+    session_id: str,
+    db: str | Path = _DEFAULT_DB,
+) -> dict[str, Any] | None:
+    """Retrieve ATS score dict for a session or None if not found."""
+    import json
+    conn = _get_conn(db)
+    cur = conn.execute(
+        "SELECT * FROM ats_scores WHERE session_id = ?",
+        (session_id,),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    try:
+        score = row["score"]
+        matched = json.loads(row["matched_keywords"]) if row["matched_keywords"] else []
+        missing = json.loads(row["missing_keywords"]) if row["missing_keywords"] else []
+        suggestions = json.loads(row["suggestions"]) if row["suggestions"] else []
+
+        matched_str = ", ".join(matched[:8]) if matched else "None"
+        missing_str = ", ".join(missing[:8]) if missing else "None"
+        sug_str = suggestions[0] if suggestions else "No specific suggestions."
+
+        formatted_md = f"""### 🎯 Resume ATS Score: **{score}%** Match
+- **Matched Keywords ({len(matched)}):** `{matched_str}`
+- **Missing Keywords ({len(missing)}):** `{missing_str}`
+- **ATS Suggestion:** {sug_str}"""
+
+        return {
+            "score": score,
+            "matched": matched,
+            "missing": missing,
+            "suggestions": suggestions,
+            "formatted_md": formatted_md,
+        }
+    except Exception as exc:
+        logger.warning("Error parsing ATS scores row: %s", exc)
+        return None

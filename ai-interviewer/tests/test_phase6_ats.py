@@ -22,7 +22,7 @@ def test_calculate_ats_score_backend_engineer():
     assert "sql" in res["matched"]
     assert "docker" in res["matched"]
     assert len(res["suggestions"]) > 0
-    assert "ATS Resume Score" in res["formatted_md"]
+    assert "Resume ATS Score" in res["formatted_md"]
 
 
 def test_calculate_ats_score_empty_text():

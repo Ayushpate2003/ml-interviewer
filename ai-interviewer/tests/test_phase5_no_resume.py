@@ -56,7 +56,7 @@ def test_full_no_resume_session_e2e(mock_pdf, mock_score, mock_inc_turns, mock_s
     assert finished is True
 
     # Report generation
-    st, scorecard, fig_radar, fig_bar, pdf_path, _ = generate_final_report(state)
+    st, scorecard, fig_radar, fig_bar, pdf_path, *rest = generate_final_report(state)
     assert scorecard is not None
     assert "85" in scorecard
     assert pdf_path == "/tmp/test_report.pdf"
