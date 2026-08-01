@@ -42,18 +42,44 @@ def extract_text_from_file(file_path: str | Path | dict | Any) -> str:
 
     ext = path.suffix.lower()
     if ext == ".pdf":
+        # 1. Try pypdf
         try:
             import pypdf
-
             reader = pypdf.PdfReader(str(path))
             text_parts = [page.extract_text() or "" for page in reader.pages]
             full_text = "\n".join(text_parts).strip()
-            logger.info("Extracted %d characters from PDF resume: %s", len(full_text), path.name)
-            return full_text
+            if full_text:
+                logger.info("Extracted %d characters from PDF resume via pypdf: %s", len(full_text), path.name)
+                return full_text
         except Exception as exc:
-            logger.warning("Failed to extract PDF text via pypdf: %s", exc, exc_info=True)
-            print(f"[RESUME PARSING ERROR] Failed to extract PDF text: {exc}")
-            return ""
+            logger.warning("Failed PDF extraction via pypdf: %s", exc)
+
+        # 2. Try PyPDF2
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(str(path))
+            text_parts = [page.extract_text() or "" for page in reader.pages]
+            full_text = "\n".join(text_parts).strip()
+            if full_text:
+                logger.info("Extracted %d characters from PDF resume via PyPDF2: %s", len(full_text), path.name)
+                return full_text
+        except Exception as exc:
+            logger.warning("Failed PDF extraction via PyPDF2: %s", exc)
+
+        # 3. Try pdfplumber
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(path)) as pdf:
+                text_parts = [p.extract_text() or "" for p in pdf.pages]
+                full_text = "\n".join(text_parts).strip()
+                if full_text:
+                    logger.info("Extracted %d characters from PDF resume via pdfplumber: %s", len(full_text), path.name)
+                    return full_text
+        except Exception as exc:
+            logger.warning("Failed PDF extraction via pdfplumber: %s", exc)
+
+        logger.warning("All PDF extraction libraries failed for %s", path.name)
+        return ""
 
     elif ext in (".txt", ".md"):
         try:

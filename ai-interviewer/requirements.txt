@@ -9,6 +9,7 @@ requests>=2.32.0               # Ollama HTTP API calls
 huggingface_hub<1.0            # Gradio 4.x runtime compatibility (HfFolder import)
 pydantic<2.11                  # Avoid Gradio 4.44 schema regression with newer Pydantic
 plotly>=5.20.0                 # Report radar & bar charts
+pypdf>=5.0.0                   # PDF resume text extraction
 ats-resume-checker>=0.2.0      # Local/offline ATS resume analyzer & keyword matcher
 
 # ── TTS ────────────────────────────────────────────────────────────────────────

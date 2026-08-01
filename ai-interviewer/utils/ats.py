@@ -36,7 +36,7 @@ ROLE_KEYWORDS = {
 
 
 def calculate_ats_score(
-    resume_file_or_text: str | Path | None,
+    resume_file_or_text: Any,
     role: str = "Backend Engineer",
 ) -> dict:
     """
@@ -63,6 +63,36 @@ def calculate_ats_score(
             "formatted_md": "",
         }
 
+    from utils.resume import extract_text_from_file
+
+    resume_text = ""
+    file_path_str = None
+
+    if isinstance(resume_file_or_text, (str, Path)):
+        p = Path(str(resume_file_or_text))
+        if p.exists() and p.is_file():
+            file_path_str = str(p)
+            resume_text = extract_text_from_file(p)
+        else:
+            resume_text = str(resume_file_or_text)
+    elif hasattr(resume_file_or_text, "name"):
+        p = Path(str(resume_file_or_text.name))
+        if p.exists() and p.is_file():
+            file_path_str = str(p)
+            resume_text = extract_text_from_file(p)
+
+    if not resume_text and not file_path_str:
+        resume_text = extract_text_from_file(resume_file_or_text)
+
+    if not resume_text or len(resume_text.strip()) < 20:
+        return {
+            "score": None,
+            "matched": [],
+            "missing": [],
+            "suggestions": [],
+            "formatted_md": "⚠️ ATS scoring unavailable for this file",
+        }
+
     role_jd_map = {
         "Backend Engineer": "Backend Engineer proficient in Python, Java, SQL, PostgreSQL, REST APIs, Microservices, Docker, Kubernetes, System Design, Caching, Git, CI/CD, Distributed Systems.",
         "System Design": "System Design Architect specializing in Scalability, Load Balancing, Caching, Sharding, Microservices, Message Queues, Fault Tolerance, Latency, Throughput, Database Indexing.",
@@ -71,19 +101,18 @@ def calculate_ats_score(
     jd_text = role_jd_map.get(role, f"{role} role requiring domain expertise and technical skills.")
 
     try:
-        path_obj = Path(str(resume_file_or_text))
-        if path_obj.exists() and path_obj.is_file():
+        if file_path_str:
             import ats_resume_checker
-            res = ats_resume_checker.analyze_resume(str(path_obj), jd_text)
+            res = ats_resume_checker.analyze_resume(file_path_str, jd_text)
             score = int(round(res.get("ats_score", 0)))
             matched = res.get("matched_keywords", [])
             missing = res.get("missing_keywords", [])
             suggestions = res.get("suggestions", [])
         else:
-            return _calculate_ats_score_fallback(str(resume_file_or_text), role)
+            return _calculate_ats_score_fallback(resume_text, role)
     except Exception as exc:
         logger.warning("ats-resume-checker failed: %s; using local fallback matcher", exc)
-        return _calculate_ats_score_fallback(str(resume_file_or_text), role)
+        return _calculate_ats_score_fallback(resume_text, role)
 
     matched_str = ", ".join(matched[:8]) if matched else "None"
     missing_str = ", ".join(missing[:8]) if missing else "None"
