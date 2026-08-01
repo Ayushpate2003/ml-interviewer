@@ -244,6 +244,35 @@ def _build_timer_html(timer_seconds: int = 90) -> str:
 </script>"""
 
 
+def _get_fallback_question(role: str, turn_index: int, total_turns: int) -> tuple[str, str | None]:
+    questions = {
+        "Backend Engineer": [
+            "Could you walk me through a challenging backend system trade-off you had to make between latency and consistency?",
+            "How do you approach database indexing, caching strategies, and connection pooling in high-throughput applications?",
+            "Can you describe an incident where a microservice failed in production, and how you diagnosed and fixed it?",
+            "Looking back at your recent projects, what architecture decision would you re-design differently today?",
+            "How do you manage database migrations and schema changes with zero downtime in production?",
+        ],
+        "System Design": [
+            "How would you design a distributed rate limiter that handles millions of requests per minute across multiple regions?",
+            "What strategies do you use for data sharding and handling hot partition keys in large-scale databases?",
+            "How do you ensure high availability and fault tolerance when building event-driven systems with message queues?",
+            "Reflecting on your system architecture experience, how do you balance cost efficiency with scalability?",
+            "How do you approach capacity planning and bottleneck identification for microservice architectures?",
+        ],
+        "HR Round": [
+            "Can you share an example of a project where you had a disagreement with a team member, and how you resolved it?",
+            "Describe a situation where a project deadline was at risk. What steps did you take to meet expectations?",
+            "How do you prioritize competing tasks and communicate status updates when under pressure?",
+            "What are your long-term career goals, and how does this role align with your personal growth?",
+            "Tell me about a time you received constructive feedback. How did you adapt your approach afterwards?",
+        ],
+    }
+    role_qs = questions.get(role, questions["Backend Engineer"])
+    idx = max(0, (turn_index - 1) % len(role_qs))
+    return role_qs[idx], None
+
+
 def start_interview(
     role: str,
     gemma_audio_all_turns: bool = False,
@@ -304,14 +333,19 @@ def start_interview(
         else:
             resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {max_turns} turns."
 
-        question, topic = get_next_question(
-            [],
-            role,
-            resume_context=resume_context,
-            time_allotted_seconds=t_sec,
-            current_turn=1,
-            total_turns=max_turns,
-        )
+        try:
+            question, topic = get_next_question(
+                [],
+                role,
+                resume_context=resume_context,
+                time_allotted_seconds=t_sec,
+                current_turn=1,
+                total_turns=max_turns,
+            )
+        except Exception as exc:
+            logger.warning("LLM call failed in start_interview (%s); using resilient fallback question.", exc)
+            question, topic = _get_fallback_question(role, 1, max_turns)
+
         _add_to_history(state, "interviewer", question)
 
         audio = None
@@ -540,7 +574,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in process_answer: %s", exc)
-        question, topic = f"⚠️ LLM Error: {exc}. Please check if Ollama is running.", None
+        question, topic = f"⚠️ Interviewer Error: {exc}. Please check if Ollama is running.", None
 
     audio = None
     if _TTS_READY and not question.startswith("⚠️"):
@@ -583,7 +617,7 @@ def skip_question(state: dict) -> tuple:
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in skip_question: %s", exc)
-        question, topic = f"⚠️ LLM Error: {exc}. Please check if Ollama is running.", None
+        question, topic = f"⚠️ Interviewer Error: {exc}. Please check if Ollama is running.", None
 
     audio = None
     if _TTS_READY and not question.startswith("⚠️"):

@@ -106,18 +106,22 @@ def _chat(
     Includes 1 retry for first-call model warmup latency.
     """
     options: dict[str, Any] = {"temperature": temperature}
-    if num_predict is not None:
-        options["num_predict"] = num_predict
-
-    payload = {
-        "model": _ACTIVE_MODEL_TAG,
-        "messages": messages,
-        "stream": False,
-        "options": options,
-    }
+    options["num_predict"] = num_predict if num_predict is not None else 1024
 
     last_exception: Exception | None = None
     for attempt in range(2):
+        if attempt == 1:
+            # On retry, boost token budget and instruct model to skip lengthy thinking
+            options["num_predict"] = max(options["num_predict"] * 2, 2048)
+            options["think"] = False
+
+        payload = {
+            "model": _ACTIVE_MODEL_TAG,
+            "messages": messages,
+            "stream": False,
+            "options": options,
+        }
+
         try:
             resp = requests.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
@@ -127,11 +131,33 @@ def _chat(
             resp.raise_for_status()
             data = resp.json()
             msg = data.get("message", {})
-            content = msg.get("content", "")
+            content = msg.get("content", "").strip()
+
             if not content and msg.get("thinking"):
+                thinking_text = msg.get("thinking", "").strip()
+                # Remove <think> ... </think> blocks if present
+                clean_text = re.sub(r"<think>.*?</think>", "", thinking_text, flags=re.DOTALL).strip()
+                if clean_text:
+                    # Take the last non-empty paragraph (where models write their final answer)
+                    paragraphs = [p.strip() for p in clean_text.split("\n\n") if p.strip()]
+                    if paragraphs:
+                        logger.info("Extracted final question text from model thinking output.")
+                        return paragraphs[-1]
+
+                # Fallback: if thinking_text has lines, return the last non-empty line
+                lines = [l.strip() for l in thinking_text.split("\n") if l.strip() and not l.strip().startswith("<")]
+                if lines:
+                    logger.info("Extracted last line from model thinking block.")
+                    return lines[-1]
+
                 logger.warning("Attempt %d/2: Gemma 4 output empty content during thinking.", attempt + 1)
                 raise RuntimeError("Empty response content (token budget exhausted during thinking)")
-            return content
+
+            if content:
+                return content
+
+            raise RuntimeError("Empty response content from Ollama")
+
         except requests.exceptions.ConnectionError as exc:
             logger.exception("Ollama connection error (attempt %d/2): %s", attempt + 1, exc)
             last_exception = ConnectionError(
@@ -204,8 +230,8 @@ def get_next_question(
             ),
         },
     ]
-    # Set generous token cap (512 tokens) to allow Gemma 4 reasoning + question output
-    raw_res = _chat(messages, temperature=0.7, num_predict=512).strip()
+    # Set generous token cap (1024 tokens) to allow reasoning + question output
+    raw_res = _chat(messages, temperature=0.7, num_predict=1024).strip()
     return parse_question_and_tool_call(raw_res)
 
 
