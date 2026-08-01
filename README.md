@@ -12,11 +12,9 @@
 
 ## 🎬 Demo Video
 
-<div align="center">
-  <video src="mlinterview.mp4" width="100%" autoplay loop muted playsinline controls>
-    Your browser does not support the video tag.
-  </video>
-</div>
+https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4
+
+> 💡 *If the inline video player does not render automatically above, click to play [mlinterview.mp4](https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4).*
 
 ---
 
