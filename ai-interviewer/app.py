@@ -295,7 +295,14 @@ def start_interview(
         else:
             resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {max_turns} turns."
 
-        question, topic = get_next_question([], role, resume_context=resume_context)
+        question, topic = get_next_question(
+            [],
+            role,
+            resume_context=resume_context,
+            time_allotted_seconds=t_sec,
+            current_turn=1,
+            total_turns=max_turns,
+        )
         _add_to_history(state, "interviewer", question)
 
         audio = None
@@ -511,7 +518,16 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
 
     try:
         resume_ctx = state.get("resume_context")
-        question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
+        t_sec = state.get("timer_seconds", 90)
+        cur_turn = state["turn_index"] + 1
+        question, topic = get_next_question(
+            state["history"],
+            state["role"],
+            resume_context=resume_ctx,
+            time_allotted_seconds=t_sec,
+            current_turn=cur_turn,
+            total_turns=max_turns,
+        )
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in process_answer: %s", exc)
@@ -545,7 +561,16 @@ def skip_question(state: dict) -> tuple:
 
     try:
         resume_ctx = state.get("resume_context")
-        question, topic = get_next_question(state["history"], state["role"], resume_context=resume_ctx)
+        t_sec = state.get("timer_seconds", 90)
+        cur_turn = state["turn_index"] + 1
+        question, topic = get_next_question(
+            state["history"],
+            state["role"],
+            resume_context=resume_ctx,
+            time_allotted_seconds=t_sec,
+            current_turn=cur_turn,
+            total_turns=max_turns,
+        )
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
         logger.error("LLM call failed in skip_question: %s", exc)

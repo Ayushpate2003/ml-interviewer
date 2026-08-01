@@ -52,8 +52,8 @@ class TestGetNextQuestion:
         # System message should contain interviewer persona and role-specific context.
         # The prompt embeds the context description text, not the role name literally.
         system_content = sent_payload["messages"][0]["content"]
-        assert "expert technical interviewer" in system_content  # persona
-        assert "APIs, databases, caching" in system_content      # Backend Engineer context block
+        assert "Time-Calibrated Interview Question Generator" in system_content
+        assert "Backend Engineer" in system_content
         assert isinstance(result, str)
         assert len(result) > 0
 

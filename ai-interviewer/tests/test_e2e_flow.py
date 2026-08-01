@@ -17,7 +17,7 @@ import pytest
 from app import _create_report_charts, generate_final_report, process_answer, start_interview
 
 
-def _mock_llm_response(history, role, resume_context=None):
+def _mock_llm_response(history, role, resume_context=None, **kwargs):
     turn_count = len(history) // 2 + 1
     return f"Question {turn_count}: Can you elaborate on your experience with this topic?", "system_design"
 

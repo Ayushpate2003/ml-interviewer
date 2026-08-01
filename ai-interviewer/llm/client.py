@@ -155,9 +155,12 @@ def get_next_question(
     history: list[dict],
     role: str,
     resume_context: str | None = None,
+    time_allotted_seconds: int = 90,
+    current_turn: int = 1,
+    total_turns: int = 5,
 ) -> tuple[str, str | None]:
     """
-    Generate the next interview question given the conversation history.
+    Generate the next interview question given the conversation history and time budget.
 
     Parameters
     ----------
@@ -167,14 +170,27 @@ def get_next_question(
         Interview role (e.g. "Backend Engineer").
     resume_context : str | None
         Optional candidate background/resume highlights to tailor questions.
+    time_allotted_seconds : int
+        Time budget for candidate's response in seconds (e.g., 60, 90, 120).
+    current_turn : int
+        Current turn number (1-indexed).
+    total_turns : int
+        Total number of turns in the session.
 
     Returns
     -------
     tuple[str, str | None]
         (question_text, followup_topic_or_None)
     """
-    system_prompt = build_system_prompt(role, resume_context=resume_context)
     transcript = format_history_for_prompt(history)
+    system_prompt = build_system_prompt(
+        role,
+        resume_context=resume_context,
+        time_allotted_seconds=time_allotted_seconds,
+        current_turn=current_turn,
+        total_turns=total_turns,
+        conversation_history=transcript if history else "None yet — this is the opening question.",
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -182,9 +198,9 @@ def get_next_question(
             "role": "user",
             "content": (
                 f"Here is the interview conversation so far:\n\n{transcript}\n\n"
-                "Ask the next focused question."
+                f"Ask turn {current_turn} of {total_turns} question."
                 if history
-                else "Start the interview. Ask the first question."
+                else f"Start the interview. Ask turn 1 of {total_turns} question."
             ),
         },
     ]
