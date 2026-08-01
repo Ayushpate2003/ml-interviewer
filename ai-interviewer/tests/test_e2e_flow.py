@@ -62,7 +62,7 @@ def test_full_5_question_session_e2e(mock_score, mock_q):
     Simulate a full 5-question interview flow from setup to Q5 report generation.
     """
     # 1. Start interview
-    state, q1, _, turn_lbl, setup_err, _, tab = start_interview("Backend Engineer", False, None)
+    state, q1, _, turn_lbl, setup_err, _, _, tab = start_interview("Backend Engineer", False, None)
     assert state is not None
     assert turn_lbl == "Question 1 of 5"
     assert state["turn_index"] == 0
@@ -102,7 +102,7 @@ def test_3x_back_to_back_full_sessions(mock_score, mock_q):
     Acceptance Criteria 4: Run full flow 3 times back-to-back to confirm stability.
     """
     for run in range(1, 4):
-        state, _, _, _, _, _, _ = start_interview("System Design", False, None)
+        state, _, _, _, _, _, _, _ = start_interview("System Design", False, None)
         for t in range(4):
             state, _, _, _, _, _, _, finished = process_answer(f"Answer {t+1} for run {run}", state)
             assert not finished

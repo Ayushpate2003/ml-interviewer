@@ -34,7 +34,7 @@ def test_start_interview(mock_speak, mock_get_next, mock_check):
     mock_get_next.return_value = ("Tell me about your past experience.", None)
     mock_speak.return_value = b"fake-audio-bytes"
 
-    state, q_text, audio_update, turn_lbl, setup_err, resume_status, tab_update = start_interview("Backend Engineer")
+    state, q_text, audio_update, turn_lbl, setup_err, resume_status, timer_html, tab_update = start_interview("Backend Engineer")
 
     assert state is not None
     assert state["role"] == "Backend Engineer"
@@ -56,7 +56,7 @@ def test_start_interview_resume_mode(mock_extract, mock_speak, mock_get_next, mo
     mock_speak.return_value = b"fake-audio-bytes"
     mock_extract.return_value = ("Python, Redis, Kafka", "ok")
 
-    state, q_text, audio_update, turn_lbl, setup_err, resume_status, tab_update = start_interview("Backend Engineer", resume_file="resume.txt")
+    state, q_text, audio_update, turn_lbl, setup_err, resume_status, timer_html, tab_update = start_interview("Backend Engineer", resume_file="resume.txt")
     assert state["resume_mode"] == "resume"
     assert "Resume mode enabled" in resume_status.get("value", "")
 
@@ -65,7 +65,7 @@ def test_start_interview_resume_mode(mock_extract, mock_speak, mock_get_next, mo
 def test_start_interview_failure_stays_on_setup(mock_check):
     mock_check.return_value = (False, "Ollama down")
 
-    state, q_text, audio_update, turn_lbl, setup_err, resume_status, tab_update = start_interview("Backend Engineer")
+    state, q_text, audio_update, turn_lbl, setup_err, resume_status, timer_html, tab_update = start_interview("Backend Engineer")
 
     assert state is None
     assert "Cannot start" in q_text

@@ -40,7 +40,8 @@ from stt.gemma_audio import transcribe_native_gemma
 from stt.transcribe import TranscriptionError, load_stt_model, transcribe
 from stt.vad import check_end_of_speech, load_vad_model
 from tts.speak import TTSError, load_tts_model, speak
-from utils.resume import extract_resume_highlights
+from utils.ats import calculate_ats_score
+from utils.resume import detect_resume_role_and_highlights, extract_resume_highlights, extract_text_from_file
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -87,6 +88,8 @@ _init_models()
 def _new_state(
     role: str,
     gemma_audio_all_turns: bool = False,
+    max_turns: int = MAX_TURNS,
+    timer_seconds: int = 90,
     *,
     resume_mode: str = "generic",
     resume_context: str = "",
@@ -95,7 +98,7 @@ def _new_state(
     session_id = create_session(
         DB_PATH,
         role=role,
-        max_turns=MAX_TURNS,
+        max_turns=max_turns,
         resume_mode=resume_mode,
         resume_context=resume_context,
     )
@@ -105,7 +108,8 @@ def _new_state(
         "history": [],          # list of {speaker, content}
         "turn_index": 0,
         "turns_completed": 0,
-        "max_turns": MAX_TURNS,
+        "max_turns": max_turns,
+        "timer_seconds": timer_seconds,
         "finished": False,
         "gemma_audio_all_turns": gemma_audio_all_turns,
         "resume_mode": resume_mode,
@@ -180,10 +184,68 @@ def _normalize_audio_input(audio_input: Any) -> bytes | str | None:
     return None
 
 
-def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file: str | None = None) -> tuple:
+def _build_timer_html(timer_seconds: int = 90) -> str:
+    sec = int(timer_seconds) if timer_seconds else 90
+    return f"""<div id="timer-display" style="padding:8px 14px; border-radius:6px; background:#1e293b; color:#10b981; font-weight:bold; font-size:15px; border:1px solid #334155; display:inline-block; margin-bottom:10px;">
+    ⏱️ Time Remaining: <span id="timer-counter">{sec}</span>s / {sec}s
+</div>
+<script>
+(function() {{
+    if (window._qTimer) clearInterval(window._qTimer);
+    var total = {sec};
+    var remaining = total;
+    var display = document.getElementById("timer-counter");
+    var box = document.getElementById("timer-display");
+    if (!display || !box) return;
+
+    function playTone(freq, duration) {{
+        try {{
+            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            var osc = ctx.createOscillator();
+            var gain = ctx.createGain();
+            osc.frequency.value = freq;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+            osc.stop(ctx.currentTime + duration);
+        }} catch(e) {{}}
+    }}
+
+    window._qTimer = setInterval(function() {{
+        remaining--;
+        if (display) display.innerText = Math.max(0, remaining);
+        var pct = ((total - remaining) / total) * 100;
+        if (pct >= 90) {{
+            if (box) {{ box.style.color = "#ef4444"; box.style.borderColor = "#ef4444"; }}
+            if (remaining === Math.floor(total * 0.10)) playTone(880, 0.3);
+        }} else if (pct >= 66) {{
+            if (box) {{ box.style.color = "#f59e0b"; box.style.borderColor = "#f59e0b"; }}
+            if (remaining === Math.floor(total * 0.34)) playTone(660, 0.2);
+        }}
+        if (remaining <= 0) {{
+            clearInterval(window._qTimer);
+            if (box) {{
+                box.innerHTML = "⏱️ <strong>Time's up — wrap up when ready</strong>";
+                box.style.color = "#ef4444";
+                box.style.borderColor = "#ef4444";
+            }}
+        }}
+    }}, 1000);
+}})();
+</script>"""
+
+
+def start_interview(
+    role: str,
+    gemma_audio_all_turns: bool = False,
+    resume_file: str | None = None,
+    num_questions: int = 5,
+    timer_seconds: int = 90,
+) -> tuple:
     """
     Initialise a new session and generate the first question.
-    Returns: (state, question_text, audio_bytes, turn_label, setup_error_update, resume_status_update, tab_update)
+    Returns: (state, question_text, audio_bytes, turn_label, setup_error_update, resume_status_update, timer_html, tab_update)
     """
     ok, err = check_ollama_ready()
     if not ok:
@@ -201,10 +263,13 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
             "",
             gr.update(value=err_html, visible=True),
             gr.update(visible=False),
+            "",
             gr.Tabs(selected="setup"),
         )
 
     try:
+        max_turns = int(num_questions) if num_questions else 5
+        t_sec = int(timer_seconds) if timer_seconds else 90
         resume_context = ""
         resume_mode = "generic"
         if resume_file:
@@ -215,14 +280,20 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
         state = _new_state(
             role,
             gemma_audio_all_turns,
+            max_turns=max_turns,
+            timer_seconds=t_sec,
             resume_mode=resume_mode,
             resume_context=resume_context,
         )
 
+        if resume_file:
+            raw_txt = extract_text_from_file(resume_file)
+            state["ats_info"] = calculate_ats_score(raw_txt, role)
+
         if resume_mode == "resume":
-            resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context for all {MAX_TURNS} turns."
+            resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context for all {max_turns} turns."
         else:
-            resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {MAX_TURNS} turns."
+            resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {max_turns} turns."
 
         question, topic = get_next_question([], role, resume_context=resume_context)
         _add_to_history(state, "interviewer", question)
@@ -234,7 +305,8 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
             except Exception as exc:
                 logger.warning("TTS failed on first question: %s", exc)
 
-        turn_label = f"Question 1 of {MAX_TURNS}"
+        turn_label = f"Question 1 of {max_turns}"
+        timer_html = _build_timer_html(t_sec)
         resume_status_update = gr.update(value=resume_status, visible=bool(resume_status))
         is_anchored = state.get("resume_mode") == "resume"
         return (
@@ -244,6 +316,7 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
             turn_label,
             gr.update(visible=False),
             resume_status_update,
+            timer_html,
             gr.Tabs(selected="interview"),
         )
     except Exception as exc:
@@ -261,6 +334,7 @@ def start_interview(role: str, gemma_audio_all_turns: bool = False, resume_file:
             "Error",
             gr.update(value=err_html, visible=True),
             gr.update(visible=False),
+            "",
             gr.Tabs(selected="setup"),
         )
 
@@ -269,9 +343,10 @@ def _transcribe_candidate_audio(audio_input: Any, state: dict) -> tuple[str, str
     """Transcribe answer audio with Gemma-native-first strategy and fallback."""
     payload = _normalize_audio_input(audio_input)
     if not payload:
-        return "", "⚡ STT Engine: Standby"
+        return "", "🎙️ STT Engine: No audio detected"
 
-    use_gemma_native = (state.get("turn_index", 0) == 0) or state.get("gemma_audio_all_turns", False)
+    use_gemma_native = state.get("gemma_audio_all_turns", False) or (state.get("turn_index", 0) == 0)
+
     if use_gemma_native:
         try:
             return transcribe_native_gemma(payload)
@@ -397,6 +472,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
     if state is None or state.get("finished"):
         return state, "", "⚡ STT Engine: Standby", "📊 Fluency Signal: Standby", "", _question_audio_update(None), "", True
 
+    max_turns = state.get("max_turns", MAX_TURNS)
     transcript = (transcript_input or state.get("pending_transcript") or "").strip()
     _, _, fluency_badge = analyze_transcript_fluency(transcript)
     stt_badge = "⚡ STT Engine: Ready"
@@ -411,7 +487,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
             fluency_badge,
             _format_question_md(last_q, is_resume_anchored=is_anchored),
             _question_audio_update(None),
-            f"Question {state['turn_index'] + 1} of {MAX_TURNS}",
+            f"Question {state['turn_index'] + 1} of {max_turns}",
             False,
         )
 
@@ -420,7 +496,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
     state["turns_completed"] = increment_turns_completed(state["session_id"], DB_PATH)
     state["turn_index"] = state["turns_completed"]
 
-    if state["turn_index"] >= MAX_TURNS:
+    if state["turn_index"] >= max_turns:
         state["finished"] = True
         return (
             state,
@@ -429,7 +505,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
             fluency_badge,
             "### Session complete — generating your report…",
             _question_audio_update(None),
-            f"Question {state['turn_index']} of {MAX_TURNS}",
+            f"Question {state['turn_index']} of {max_turns}",
             True,
         )
 
@@ -448,7 +524,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
         except Exception as exc:
             logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
-    turn_label = f"Question {state['turn_index'] + 1} of {MAX_TURNS}"
+    turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
     is_anchored = state.get("resume_mode") == "resume"
     return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
@@ -458,13 +534,14 @@ def skip_question(state: dict) -> tuple:
     if state is None or state.get("finished"):
         return state, "", "", _question_audio_update(None), "", True
 
+    max_turns = (state or {}).get("max_turns", MAX_TURNS)
     _add_to_history(state, "candidate", "[skipped]")
     state["turns_completed"] = increment_turns_completed(state["session_id"], DB_PATH)
     state["turn_index"] = state["turns_completed"]
 
-    if state["turn_index"] >= MAX_TURNS:
+    if state["turn_index"] >= max_turns:
         state["finished"] = True
-        return state, "[skipped]", "Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {MAX_TURNS}", True
+        return state, "[skipped]", "Session complete — generating your report…", _question_audio_update(None), f"Question {state['turn_index']} of {max_turns}", True
 
     try:
         resume_ctx = state.get("resume_context")
@@ -481,7 +558,7 @@ def skip_question(state: dict) -> tuple:
         except Exception as exc:
             logger.warning("TTS failed: %s", exc)
 
-    turn_label = f"Question {state['turn_index'] + 1} of {MAX_TURNS}"
+    turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
     is_anchored = state.get("resume_mode") == "resume"
     return state, "[skipped]", _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
 
@@ -629,13 +706,30 @@ def build_ui() -> gr.Blocks:
                     visible=bool(_OLLAMA_ERROR),
                 )
                 gr.Markdown("## 1. Choose your interview type")
+                detected_role_state = gr.State(value=None)
                 role_dropdown = gr.Dropdown(
                     choices=ROLES,
                     value=ROLES[0],
                     label="Interview Role / Domain",
                     interactive=True,
                 )
+                role_mismatch_box = gr.Markdown(visible=False)
+                switch_role_btn = gr.Button("⚡ Switch to Auto-Detected Role", visible=False)
                 gr.Markdown("## 2. Options")
+                num_questions_dropdown = gr.Dropdown(
+                    choices=[3, 5, 7, 10],
+                    value=5,
+                    label="Number of Questions",
+                    info="Select 3, 5, 7, or 10 questions for your interview session.",
+                    interactive=True,
+                )
+                timer_allotment_dropdown = gr.Dropdown(
+                    choices=[60, 90, 120],
+                    value=90,
+                    label="Per-Question Timer (seconds)",
+                    info="Warning tones fire at 66% (amber) and 90% (red) elapsed time.",
+                    interactive=True,
+                )
                 gemma_audio_checkbox = gr.Checkbox(
                     label="🎙️ Enable Gemma 4 Native Audio Perception for ALL turns",
                     value=False,
@@ -662,6 +756,7 @@ def build_ui() -> gr.Blocks:
             # ── Screen 2: Live Interview ───────────────────────────────────────
             with gr.Tab("Live Interview", id="interview"):
                 turn_counter = gr.Markdown("Question 1 of 5")
+                question_timer_box = gr.HTML(_build_timer_html(90))
                 question_text = gr.Markdown("## 💬 Interviewer's Question\n\n*Your first question will appear here after starting the interview.*")
                 # The output audio component renders Gradio's full player once a
                 # question is generated: play/pause, seek, playback speed, and
@@ -739,23 +834,69 @@ def build_ui() -> gr.Blocks:
         )
 
         # Auto-start if user switches to Live Interview tab directly
-        def _on_tab_select(evt: gr.SelectData, st, role, gemma_all, r_file):
+        def _on_tab_select(evt: gr.SelectData, st, role, gemma_all, r_file, num_q, t_sec):
             if evt.value == "Live Interview" and st is None:
-                st, q_text, q_audio, turn_lbl, setup_err, r_status, _ = start_interview(role, gemma_all, r_file)
-                return st, q_text, q_audio, turn_lbl
-            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+                st, q_text, q_audio, turn_lbl, setup_err, r_status, t_html, _ = start_interview(role, gemma_all, r_file, num_q, t_sec)
+                return st, q_text, q_audio, turn_lbl, t_html
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip()
 
         tabs.select(
             fn=_on_tab_select,
-            inputs=[state, role_dropdown, gemma_audio_checkbox, resume_file],
-            outputs=[state, question_text, question_audio, turn_counter],
+            inputs=[state, role_dropdown, gemma_audio_checkbox, resume_file, num_questions_dropdown, timer_allotment_dropdown],
+            outputs=[state, question_text, question_audio, turn_counter, question_timer_box],
+        )
+
+        # Auto-detect role & extract highlights on resume upload
+        def _on_resume_upload(file_path, current_role):
+            if not file_path:
+                return gr.update(), gr.update(value="", visible=False), None, gr.update(value="", visible=False), gr.update(visible=False)
+            highlights, detected_role, status_notice = detect_resume_role_and_highlights(file_path, ROLES)
+            selected_role = detected_role if detected_role else current_role
+
+            raw_txt = extract_text_from_file(file_path)
+            ats_info = calculate_ats_score(raw_txt, selected_role)
+            if ats_info.get("formatted_md"):
+                status_notice += f"\n\n{ats_info['formatted_md']}"
+
+            status_update = gr.update(value=status_notice, visible=bool(status_notice))
+            return selected_role, status_update, detected_role, gr.update(value="", visible=False), gr.update(visible=False)
+
+        resume_file.change(
+            fn=_on_resume_upload,
+            inputs=[resume_file, role_dropdown],
+            outputs=[role_dropdown, resume_status_box, detected_role_state, role_mismatch_box, switch_role_btn],
+        )
+
+        # Role dropdown manual selection change check against detected_role
+        def _on_role_change(selected_role, detected_role):
+            if detected_role and selected_role != detected_role:
+                msg = f"💡 **Suggestion:** Your resume matches **{detected_role}** best, but **{selected_role}** is selected."
+                return gr.update(value=msg, visible=True), gr.update(visible=True)
+            return gr.update(value="", visible=False), gr.update(visible=False)
+
+        role_dropdown.change(
+            fn=_on_role_change,
+            inputs=[role_dropdown, detected_role_state],
+            outputs=[role_mismatch_box, switch_role_btn],
+        )
+
+        # Switch role button click
+        def _on_switch_role(detected_role):
+            if detected_role:
+                return detected_role, gr.update(value="", visible=False), gr.update(visible=False)
+            return gr.skip(), gr.update(value="", visible=False), gr.update(visible=False)
+
+        switch_role_btn.click(
+            fn=_on_switch_role,
+            inputs=[detected_role_state],
+            outputs=[role_dropdown, role_mismatch_box, switch_role_btn],
         )
 
         # Start interview
         start_btn.click(
             fn=start_interview,
-            inputs=[role_dropdown, gemma_audio_checkbox, resume_file],
-            outputs=[state, question_text, question_audio, turn_counter, setup_error_box, resume_status_box, tabs],
+            inputs=[role_dropdown, gemma_audio_checkbox, resume_file, num_questions_dropdown, timer_allotment_dropdown],
+            outputs=[state, question_text, question_audio, turn_counter, setup_error_box, resume_status_box, question_timer_box, tabs],
         )
 
         # Submit answer

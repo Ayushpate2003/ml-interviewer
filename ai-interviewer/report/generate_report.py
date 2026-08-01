@@ -118,6 +118,11 @@ def generate_report(
         story.append(Paragraph("Scorecard unavailable for this session.", styles["Normal"]))
         story.append(Spacer(1, 0.5 * cm))
 
+    # ── ATS Analysis Section ──────────────────────────────────────────────────
+    ats_info = session.get("ats_info")
+    if ats_info and ats_info.get("score") is not None:
+        story.extend(_build_ats_section(styles, ats_info))
+
     # ── Section 3: Full transcript ────────────────────────────────────────────
     if turns:
         story.extend(_build_transcript(styles, turns))
@@ -132,6 +137,24 @@ def generate_report(
 
 
 # ── Section builders ──────────────────────────────────────────────────────────
+
+def _build_ats_section(styles: Any, ats_info: dict) -> list:
+    score = ats_info.get("score")
+    matched = ", ".join(ats_info.get("matched", [])[:6]) or "None"
+    missing = ", ".join(ats_info.get("missing", [])[:6]) or "None"
+    suggestions = ats_info.get("suggestions", [""])
+    sug_str = suggestions[0] if suggestions else ""
+
+    head_style = ParagraphStyle("ATSHead", parent=styles["Heading2"], textColor=_BRAND_DARK, spaceAfter=6)
+    norm_style = styles["Normal"]
+
+    return [
+        Paragraph(f"🎯 ATS Resume Match Score: {score}%", head_style),
+        Paragraph(f"<b>Matched Keywords:</b> {matched}", norm_style),
+        Paragraph(f"<b>Missing Keywords:</b> {missing}", norm_style),
+        Paragraph(f"<b>Suggestion:</b> {sug_str}", norm_style),
+        Spacer(1, 0.5 * cm),
+    ]
 
 def _build_cover(
     styles: Any,

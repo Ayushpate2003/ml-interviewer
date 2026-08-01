@@ -29,6 +29,10 @@ wheels/
 .coverage
 htmlcov/
 
+# Application Data & Reports
+data/*.pdf
+data/*.db*
+
 # Environment variables
 .env
 .env.*
