@@ -10,6 +10,16 @@
 
 ---
 
+## 🎬 Demo Video
+
+<div align="center">
+  <video src="mlinterview.mp4" width="100%" autoplay loop muted playsinline controls>
+    Your browser does not support the video tag.
+  </video>
+</div>
+
+---
+
 ## 🌟 Overview & Key Capabilities
 
 The **Privacy-First AI Interviewer** is designed for candidates, campus placement drives, and privacy-sensitive organizations needing realistic interview practice without data leakage, cloud API bills, or network latency.
