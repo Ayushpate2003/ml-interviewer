@@ -44,8 +44,8 @@ def test_plotly_chart_creation_success(sample_session):
 
     assert fig_radar is not None
     assert fig_bar is not None
-    assert fig_radar.layout.title.text == "5-Dimension Rubric Radar Chart"
-    assert fig_bar.layout.title.text == "Rubric Dimension Breakdown"
+    assert fig_radar.layout.title.text == "🕸️ Rubric Radar Chart"
+    assert fig_bar.layout.title.text == "📊 Dimension Scores"
 
 
 def test_plotly_chart_creation_graceful_fallback_on_invalid_data():

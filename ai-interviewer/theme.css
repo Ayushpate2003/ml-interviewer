@@ -1,0 +1,611 @@
+/*
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *  PRIVACY-FIRST AI INTERVIEWER — DESIGN SYSTEM
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *
+ *  COLOR PALETTE (Dark Theme)
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  Token                 Hex              Usage
+ *  --bg-primary          #0f1117          Page background
+ *  --bg-elevated         #161b22          Card / container backgrounds
+ *  --bg-surface          #1c2333          Nested surfaces, inputs, dropdowns
+ *  --bg-hover            #21262d          Hover states on cards
+ *  --border-subtle       #2d333b          Card borders, dividers
+ *  --border-active       #3d8bfd          Focused / active borders
+ *  --text-primary        #e6edf3          Headings, primary body text
+ *  --text-secondary      #8b949e          Labels, captions, descriptions
+ *  --text-muted          #6e7681          Disabled, placeholder text
+ *  --accent-blue         #3d8bfd          Primary action, links, focus rings
+ *  --accent-indigo       #6366f1          Chart accent, radar fill
+ *  --accent-purple       #8b5cf6          Secondary chart accent
+ *  --success             #10b981          Good status, offline badge, high scores
+ *  --warning             #f59e0b          Amber alerts, timer 66%
+ *  --error               #ef4444          Errors, timer 90%, low scores
+ *  --accent-glow         rgba(61,139,253,0.15)  Primary button hover glow
+ *
+ *  TYPOGRAPHY SCALE
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  Token         Size    Weight    Usage
+ *  --font-title  28px    700       Page title
+ *  --font-h2     20px    600       Section headings
+ *  --font-body   15px    400       Body text
+ *  --font-label  13px    500       Labels, badges, captions
+ *  --font-mono   14px    400       Transcript, code, technical values
+ *
+ *  SPACING SCALE (4px base)
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  --sp-1: 4px  |  --sp-2: 8px  |  --sp-3: 12px  |  --sp-4: 16px
+ *  --sp-5: 20px |  --sp-6: 24px  |  --sp-8: 32px  |  --sp-12: 48px
+ *
+ *  CARD TREATMENT
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  border-radius: 12px
+ *  border: 1px solid var(--border-subtle)
+ *  background: var(--bg-elevated)
+ *  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25)
+ *
+ *  BUTTON HIERARCHY
+ *  ──────────────────────────────────────────────────────────────────────────────
+ *  Primary   — solid --accent-blue bg, white text, glow on hover
+ *  Secondary — transparent bg, --accent-blue border + text
+ *  Ghost     — transparent, --text-secondary text, no border
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════
+ */
+
+/* ── CSS Custom Properties ────────────────────────────────────────────────── */
+:root {
+    --bg-primary:     #0f1117;
+    --bg-elevated:    #161b22;
+    --bg-surface:     #1c2333;
+    --bg-hover:       #21262d;
+    --border-subtle:  #2d333b;
+    --border-active:  #3d8bfd;
+    --text-primary:   #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted:     #6e7681;
+    --accent-blue:    #3d8bfd;
+    --accent-indigo:  #6366f1;
+    --accent-purple:  #8b5cf6;
+    --success:        #10b981;
+    --warning:        #f59e0b;
+    --error:          #ef4444;
+    --accent-glow:    rgba(61, 139, 253, 0.15);
+
+    --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+    --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-12: 48px;
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-xl: 20px;
+    --radius-full: 9999px;
+
+    --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.25);
+    --shadow-elevated: 0 4px 16px rgba(0, 0, 0, 0.35);
+    --shadow-glow: 0 0 20px var(--accent-glow);
+
+    --font-stack: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+
+/* ── Global Overrides ─────────────────────────────────────────────────────── */
+.gradio-container {
+    background: var(--bg-primary) !important;
+    font-family: var(--font-stack) !important;
+    max-width: 960px !important;
+    margin: 0 auto !important;
+}
+
+.dark .gradio-container,
+.gradio-container {
+    background: var(--bg-primary) !important;
+}
+
+/* Override Gradio footer */
+footer { opacity: 0.4; }
+
+/* ── Offline Badge ────────────────────────────────────────────────────────── */
+.offline-badge {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    color: var(--success);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: var(--radius-full);
+    padding: var(--sp-2) var(--sp-6);
+    font-weight: 600;
+    text-align: center;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    max-width: 480px;
+    margin: var(--sp-4) auto var(--sp-2) auto;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 0 16px rgba(16, 185, 129, 0.08);
+}
+
+/* ── App Title ────────────────────────────────────────────────────────────── */
+.app-title {
+    text-align: center;
+    font-size: 28px !important;
+    font-weight: 700 !important;
+    color: var(--text-primary) !important;
+    margin-bottom: var(--sp-2) !important;
+    letter-spacing: -0.5px;
+}
+
+/* ── Warning Box ──────────────────────────────────────────────────────────── */
+.warning-box {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-left: 4px solid var(--error);
+    padding: var(--sp-4);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+/* ── Step Indicator Bar ───────────────────────────────────────────────────── */
+.step-indicator {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0;
+    padding: var(--sp-4) 0;
+    margin-bottom: var(--sp-6);
+}
+.step-indicator .step {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: color 0.2s;
+}
+.step-indicator .step.active {
+    color: var(--accent-blue);
+}
+.step-indicator .step.completed {
+    color: var(--success);
+}
+.step-indicator .step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    border: 2px solid var(--border-subtle);
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    transition: all 0.2s;
+}
+.step-indicator .step.active .step-num {
+    border-color: var(--accent-blue);
+    background: var(--accent-blue);
+    color: #ffffff;
+    box-shadow: 0 0 12px var(--accent-glow);
+}
+.step-indicator .step.completed .step-num {
+    border-color: var(--success);
+    background: var(--success);
+    color: #ffffff;
+}
+.step-indicator .step-connector {
+    width: 48px;
+    height: 2px;
+    background: var(--border-subtle);
+    margin: 0 var(--sp-3);
+    border-radius: 1px;
+}
+.step-indicator .step-connector.done {
+    background: var(--success);
+}
+
+/* ── Setup Cards ──────────────────────────────────────────────────────────── */
+.setup-card {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: var(--sp-6) !important;
+    margin-bottom: var(--sp-5) !important;
+    box-shadow: var(--shadow-card) !important;
+    transition: border-color 0.2s;
+}
+.setup-card:hover {
+    border-color: rgba(61, 139, 253, 0.2) !important;
+}
+
+.setup-card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-4);
+}
+.setup-card-header .card-num {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent-blue), var(--accent-indigo));
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+}
+.setup-card-header .card-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+.setup-card-header .card-subtitle {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 2px 0 0 0;
+}
+
+/* ── Status Badges ────────────────────────────────────────────────────────── */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--radius-full);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+}
+.status-badge-resume {
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    color: var(--success);
+}
+.status-badge-generic {
+    background: rgba(139, 148, 158, 0.1);
+    border: 1px solid rgba(139, 148, 158, 0.3);
+    color: var(--text-secondary);
+}
+.status-badge-warning {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    color: var(--warning);
+}
+
+/* ── CTA Button (Start Interview) ─────────────────────────────────────────── */
+.cta-button button {
+    background: linear-gradient(135deg, var(--accent-blue), #2563eb) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: var(--radius-md) !important;
+    padding: var(--sp-4) var(--sp-8) !important;
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.3px !important;
+    box-shadow: 0 4px 14px rgba(61, 139, 253, 0.35) !important;
+    transition: all 0.25s ease !important;
+    margin-top: var(--sp-6) !important;
+}
+.cta-button button:hover {
+    box-shadow: 0 6px 24px rgba(61, 139, 253, 0.5) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ── Question Card (Live Interview) ────────────────────────────────────────── */
+.question-card {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-left: 4px solid var(--accent-blue) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: var(--sp-6) !important;
+    margin: var(--sp-4) 0 !important;
+    box-shadow: var(--shadow-card) !important;
+}
+.question-card h2 {
+    color: var(--accent-blue) !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 1px !important;
+    margin-bottom: var(--sp-3) !important;
+}
+.question-card h3 {
+    color: var(--text-primary) !important;
+    font-size: 18px !important;
+    font-weight: 500 !important;
+    line-height: 1.6 !important;
+}
+
+/* ── Status Strip (STT / Fluency / VAD) ────────────────────────────────────── */
+.status-strip {
+    display: flex !important;
+    gap: var(--sp-3) !important;
+    flex-wrap: wrap !important;
+    margin: var(--sp-3) 0 !important;
+}
+.status-strip > div {
+    flex: 1 !important;
+    min-width: 150px !important;
+}
+.status-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    padding: var(--sp-1) var(--sp-3);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+/* ── Answer Card ──────────────────────────────────────────────────────────── */
+.answer-card {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: var(--sp-5) !important;
+    margin: var(--sp-4) 0 !important;
+    box-shadow: var(--shadow-card) !important;
+}
+.answer-card .gr-button {
+    min-height: 44px !important;
+}
+
+/* ── Turn Progress Bar ────────────────────────────────────────────────────── */
+.turn-progress {
+    margin-bottom: var(--sp-4);
+}
+.turn-progress-bar {
+    background: var(--bg-surface);
+    border-radius: var(--radius-full);
+    height: 8px;
+    overflow: hidden;
+    margin-top: var(--sp-2);
+    border: 1px solid var(--border-subtle);
+}
+.turn-progress-fill {
+    height: 100%;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-indigo));
+    transition: width 0.5s ease;
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+.turn-progress-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.turn-progress-label span {
+    color: var(--accent-blue);
+    font-weight: 700;
+}
+
+/* ── Timer Display ────────────────────────────────────────────────────────── */
+.timer-display {
+    padding: var(--sp-2) var(--sp-4);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+    color: var(--success);
+    font-weight: 700;
+    font-size: 14px;
+    border: 1px solid var(--border-subtle);
+    display: inline-block;
+    margin-bottom: var(--sp-3);
+    font-family: var(--font-mono);
+}
+
+/* ── Button Hierarchy ─────────────────────────────────────────────────────── */
+.btn-primary button {
+    background: linear-gradient(135deg, var(--accent-blue), #2563eb) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: var(--radius-md) !important;
+    font-weight: 600 !important;
+    box-shadow: 0 2px 8px rgba(61, 139, 253, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+.btn-primary button:hover {
+    box-shadow: 0 4px 16px rgba(61, 139, 253, 0.45) !important;
+    transform: translateY(-1px) !important;
+}
+
+.btn-secondary button {
+    background: transparent !important;
+    color: var(--text-secondary) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-md) !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+}
+.btn-secondary button:hover {
+    border-color: var(--accent-blue) !important;
+    color: var(--accent-blue) !important;
+    background: rgba(61, 139, 253, 0.05) !important;
+}
+
+.btn-finish button {
+    background: transparent !important;
+    color: var(--warning) !important;
+    border: 1px solid rgba(245, 158, 11, 0.3) !important;
+    border-radius: var(--radius-md) !important;
+    font-weight: 500 !important;
+}
+.btn-finish button:hover {
+    background: rgba(245, 158, 11, 0.08) !important;
+}
+
+/* ── Score Hero (Report) ──────────────────────────────────────────────────── */
+.score-hero {
+    text-align: center;
+    padding: var(--sp-8) var(--sp-6);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-elevated);
+    margin-bottom: var(--sp-6);
+}
+.score-hero .score-ring {
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36px;
+    font-weight: 800;
+    color: var(--text-primary);
+    margin-bottom: var(--sp-3);
+    position: relative;
+}
+.score-hero .score-ring::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 4px solid var(--border-subtle);
+}
+.score-hero .score-ring.score-high { border: 4px solid var(--success); box-shadow: 0 0 24px rgba(16, 185, 129, 0.25); }
+.score-hero .score-ring.score-mid  { border: 4px solid var(--warning); box-shadow: 0 0 24px rgba(245, 158, 11, 0.25); }
+.score-hero .score-ring.score-low  { border: 4px solid var(--error);   box-shadow: 0 0 24px rgba(239, 68, 68, 0.25); }
+.score-hero .score-label {
+    font-size: 14px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.score-hero .score-role {
+    font-size: 16px;
+    color: var(--text-primary);
+    font-weight: 600;
+    margin-top: var(--sp-1);
+}
+
+/* ── Dimension Cards (Report) ─────────────────────────────────────────────── */
+.dimension-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: var(--sp-4);
+    margin-bottom: var(--sp-3);
+}
+.dimension-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--sp-2);
+}
+.dimension-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.dimension-score {
+    font-size: 15px;
+    font-weight: 700;
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: var(--radius-full);
+    min-width: 50px;
+    text-align: center;
+}
+.dimension-score.high { background: rgba(16, 185, 129, 0.12); color: var(--success); }
+.dimension-score.mid  { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+.dimension-score.low  { background: rgba(239, 68, 68, 0.12);  color: var(--error); }
+
+.dimension-bar {
+    height: 6px;
+    background: var(--bg-surface);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    margin-bottom: var(--sp-2);
+}
+.dimension-bar-fill {
+    height: 100%;
+    border-radius: var(--radius-full);
+    transition: width 0.5s ease;
+}
+.dimension-bar-fill.high { background: linear-gradient(90deg, var(--success), #34d399); }
+.dimension-bar-fill.mid  { background: linear-gradient(90deg, var(--warning), #fbbf24); }
+.dimension-bar-fill.low  { background: linear-gradient(90deg, var(--error), #f87171); }
+
+.dimension-justification {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* ── Chart Cards (Report) ─────────────────────────────────────────────────── */
+.chart-card {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: var(--sp-4) !important;
+    box-shadow: var(--shadow-card) !important;
+}
+
+/* ── ATS Card (Report) ────────────────────────────────────────────────────── */
+.ats-card {
+    background: var(--bg-elevated) !important;
+    border: 1px solid rgba(139, 92, 246, 0.2) !important;
+    border-left: 4px solid var(--accent-purple) !important;
+    border-radius: var(--radius-lg) !important;
+    padding: var(--sp-5) !important;
+    margin: var(--sp-5) 0 !important;
+    box-shadow: var(--shadow-card) !important;
+}
+
+/* ── Transcript Accordion (Report) ────────────────────────────────────────── */
+.transcript-accordion {
+    opacity: 0.85;
+}
+.transcript-accordion .label-wrap {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border-subtle) !important;
+    border-radius: var(--radius-md) !important;
+}
+
+/* ── Section Divider ──────────────────────────────────────────────────────── */
+.section-divider {
+    border: none;
+    height: 1px;
+    background: var(--border-subtle);
+    margin: var(--sp-5) 0;
+}
+.section-heading {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    color: var(--text-primary) !important;
+    margin-bottom: var(--sp-3) !important;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+}
+
+/* ── Tabs Styling ─────────────────────────────────────────────────────────── */
+.tabs > .tab-nav > button {
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.3px !important;
+}
+.tabs > .tab-nav > button.selected {
+    font-weight: 700 !important;
+    border-bottom-width: 3px !important;
+}
+
+/* ── Report actions row ───────────────────────────────────────────────────── */
+.report-actions {
+    display: flex !important;
+    gap: var(--sp-3) !important;
+    margin-top: var(--sp-6) !important;
+}
+.report-actions > div {
+    flex: 1 !important;
+}

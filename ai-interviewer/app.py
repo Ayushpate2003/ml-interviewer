@@ -194,7 +194,7 @@ def _normalize_audio_input(audio_input: Any) -> bytes | str | None:
 
 def _build_timer_html(timer_seconds: int = 90) -> str:
     sec = int(timer_seconds) if timer_seconds else 90
-    return f"""<div id="timer-display" style="padding:8px 14px; border-radius:6px; background:#1e293b; color:#10b981; font-weight:bold; font-size:15px; border:1px solid #334155; display:inline-block; margin-bottom:10px;">
+    return f"""<div id="timer-display" class="timer-display">
     ⏱️ Time Remaining: <span id="timer-counter">{sec}</span>s / {sec}s
 </div>
 <script>
@@ -685,34 +685,55 @@ def _create_report_charts(scorecard: dict):
         import plotly.express as px
         import plotly.graph_objects as go
 
+        # Dark theme layout
+        _dark_layout = dict(
+            paper_bgcolor="#161b22",
+            plot_bgcolor="#161b22",
+            font=dict(color="#e6edf3", family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", size=13),
+            margin=dict(l=40, r=40, t=50, b=40),
+        )
+
         # Radar chart
         fig_radar = go.Figure(
             data=go.Scatterpolar(
                 r=dim_scores + [dim_scores[0]],
                 theta=dim_names + [dim_names[0]],
                 fill="toself",
+                fillcolor="rgba(99, 102, 241, 0.15)",
                 name="Rubric Score",
-                line_color="#6366F1",
+                line=dict(color="#6366f1", width=2),
+                marker=dict(color="#818cf8", size=6),
             )
         )
         fig_radar.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+            polar=dict(
+                radialaxis=dict(visible=True, range=[0, 5], gridcolor="#2d333b", linecolor="#2d333b", tickfont=dict(color="#8b949e")),
+                angularaxis=dict(gridcolor="#2d333b", linecolor="#2d333b"),
+                bgcolor="#161b22",
+            ),
             showlegend=False,
-            margin=dict(l=30, r=30, t=30, b=30),
-            title="5-Dimension Rubric Radar Chart",
+            title=dict(text="🕸️ Rubric Radar Chart", font=dict(size=16)),
+            **_dark_layout,
         )
 
         # Bar chart
-        fig_bar = px.bar(
-            x=dim_names,
-            y=dim_scores,
-            labels={"x": "Dimension", "y": "Score (0-5)"},
-            title="Rubric Dimension Breakdown",
-            color=dim_scores,
-            color_continuous_scale="Viridis",
-            range_y=[0, 5.5],
+        bar_colors = ["#10b981" if s >= 4 else "#f59e0b" if s >= 2.5 else "#ef4444" for s in dim_scores]
+        fig_bar = go.Figure(
+            data=go.Bar(
+                x=dim_names,
+                y=dim_scores,
+                marker=dict(color=bar_colors, line=dict(width=0), cornerradius=6),
+                text=[f"{s:.1f}" for s in dim_scores],
+                textposition="outside",
+                textfont=dict(color="#e6edf3", size=13, family="-apple-system, sans-serif"),
+            )
         )
-        fig_bar.update_layout(margin=dict(l=30, r=30, t=30, b=30))
+        fig_bar.update_layout(
+            yaxis=dict(range=[0, 5.5], gridcolor="#2d333b", linecolor="#2d333b", tickfont=dict(color="#8b949e")),
+            xaxis=dict(tickfont=dict(color="#8b949e")),
+            title=dict(text="📊 Dimension Scores", font=dict(size=16)),
+            **_dark_layout,
+        )
 
         return fig_radar, fig_bar
     except Exception as exc:
@@ -721,41 +742,121 @@ def _create_report_charts(scorecard: dict):
 
 
 def _format_scorecard_md(scorecard: dict) -> str:
-    lines = [f"### Overall Score: {scorecard.get('overall_score', 'N/A')} / 5.0\n"]
-    lines.append("| Dimension | Score | Justification |")
-    lines.append("|---|---|---|")
+    overall = scorecard.get("overall_score", "N/A")
+    try:
+        score_val = float(overall)
+        score_class = "high" if score_val >= 3.5 else "mid" if score_val >= 2.0 else "low"
+        score_display = f"{score_val:.1f}"
+    except (ValueError, TypeError):
+        score_class = "mid"
+        score_display = str(overall)
+
+    role = scorecard.get("role", "Interview")
+
+    # Score hero
+    html = f"""<div class="score-hero">
+        <div class="score-ring {score_class}">{score_display}</div>
+        <div class="score-label">Overall Score / 5.0</div>
+        <div class="score-role">{role} Performance</div>
+    </div>\n"""
+
+    # Dimension cards
     for dim in scorecard.get("dimensions") or []:
         name = dim.get("name", "").replace("_", " ").title()
-        score = dim.get("score", "N/A")
+        try:
+            s = float(dim.get("score", 0))
+            tier = "high" if s >= 3.5 else "mid" if s >= 2.0 else "low"
+            pct = min(s / 5.0 * 100, 100)
+            score_text = f"{s:.1f}"
+        except (ValueError, TypeError):
+            tier = "mid"
+            pct = 0
+            score_text = str(dim.get("score", "N/A"))
         justification = dim.get("justification", "")
-        lines.append(f"| {name} | {score} | {justification} |")
+
+        html += f"""<div class="dimension-card">
+            <div class="dimension-header">
+                <span class="dimension-name">{name}</span>
+                <span class="dimension-score {tier}">{score_text} / 5</span>
+            </div>
+            <div class="dimension-bar"><div class="dimension-bar-fill {tier}" style="width:{pct}%"></div></div>
+            <div class="dimension-justification">{justification}</div>
+        </div>\n"""
+
     if scorecard.get("summary"):
-        lines.append(f"\n**Summary:** {scorecard['summary']}")
-    return "\n".join(lines)
+        html += f'\n<div style="margin-top:16px; padding:16px; background:#161b22; border:1px solid #2d333b; border-radius:12px;">'
+        html += f'<div style="font-size:14px; font-weight:600; color:#e6edf3; margin-bottom:8px;">📝 Summary</div>'
+        html += f'<div style="font-size:14px; color:#8b949e; line-height:1.6;">{scorecard["summary"]}</div></div>'
+
+    return html
 
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
 
-_CSS = """
-    .offline-badge {
-        background: linear-gradient(135deg, #1B1F3B, #2d3561);
-        color: #4ff0b2;
-        border-radius: 8px;
-        padding: 8px 16px;
-        font-weight: bold;
-        text-align: center;
-        font-size: 14px;
-        letter-spacing: 0.5px;
-    }
-    .warning-box {
-        background: #fff3cd;
-        border-left: 4px solid #ffc107;
-        padding: 10px;
-        border-radius: 4px;
-    }
-"""
+# Load design system from external CSS file
+_CSS_PATH = Path(__file__).parent / "theme.css"
+_CSS = _CSS_PATH.read_text(encoding="utf-8") if _CSS_PATH.exists() else ""
 
-_THEME = gr.themes.Soft(primary_hue="blue", neutral_hue="slate")
+_THEME = gr.themes.Base(
+    primary_hue=gr.themes.colors.blue,
+    secondary_hue=gr.themes.colors.slate,
+    neutral_hue=gr.themes.colors.gray,
+    font=gr.themes.GoogleFont("Inter"),
+).set(
+    body_background_fill="#0f1117",
+    body_background_fill_dark="#0f1117",
+    body_text_color="#e6edf3",
+    body_text_color_dark="#e6edf3",
+    body_text_color_subdued="#8b949e",
+    body_text_color_subdued_dark="#8b949e",
+    background_fill_primary="#161b22",
+    background_fill_primary_dark="#161b22",
+    background_fill_secondary="#1c2333",
+    background_fill_secondary_dark="#1c2333",
+    border_color_primary="#2d333b",
+    border_color_primary_dark="#2d333b",
+    block_background_fill="#161b22",
+    block_background_fill_dark="#161b22",
+    block_border_color="#2d333b",
+    block_border_color_dark="#2d333b",
+    block_label_background_fill="#1c2333",
+    block_label_background_fill_dark="#1c2333",
+    block_label_text_color="#8b949e",
+    block_label_text_color_dark="#8b949e",
+    block_title_text_color="#e6edf3",
+    block_title_text_color_dark="#e6edf3",
+    input_background_fill="#1c2333",
+    input_background_fill_dark="#1c2333",
+    input_border_color="#2d333b",
+    input_border_color_dark="#2d333b",
+    input_border_color_focus="#3d8bfd",
+    input_border_color_focus_dark="#3d8bfd",
+    button_primary_background_fill="#3d8bfd",
+    button_primary_background_fill_dark="#3d8bfd",
+    button_primary_background_fill_hover="#2563eb",
+    button_primary_background_fill_hover_dark="#2563eb",
+    button_primary_text_color="#ffffff",
+    button_primary_text_color_dark="#ffffff",
+    button_secondary_background_fill="transparent",
+    button_secondary_background_fill_dark="transparent",
+    button_secondary_border_color="#2d333b",
+    button_secondary_border_color_dark="#2d333b",
+    button_secondary_text_color="#8b949e",
+    button_secondary_text_color_dark="#8b949e",
+    block_radius="12px",
+    container_radius="14px",
+    input_radius="8px",
+    button_large_radius="10px",
+    button_small_radius="8px",
+    shadow_drop="0 2px 8px rgba(0,0,0,0.25)",
+    shadow_drop_lg="0 4px 16px rgba(0,0,0,0.35)",
+    checkbox_background_color="#1c2333",
+    checkbox_background_color_dark="#1c2333",
+    checkbox_border_color="#2d333b",
+    checkbox_border_color_dark="#2d333b",
+    checkbox_label_text_color="#e6edf3",
+    checkbox_label_text_color_dark="#e6edf3",
+)
 
 
 def build_ui() -> gr.Blocks:
@@ -765,7 +866,7 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
         )
-        gr.Markdown("# 🎙️ Privacy-First AI Interviewer")
+        gr.Markdown("# 🎙️ Privacy-First AI Interviewer", elem_classes=["app-title"])
 
         # ── Session state ─────────────────────────────────────────────────────
         state = gr.State(None)
@@ -773,6 +874,15 @@ def build_ui() -> gr.Blocks:
         with gr.Tabs() as tabs:
             # ── Screen 1: Setup ───────────────────────────────────────────────
             with gr.Tab("Setup", id="setup"):
+                # Step indicator
+                gr.HTML("""<div class="step-indicator">
+                    <div class="step active"><div class="step-num">1</div><span>Setup</span></div>
+                    <div class="step-connector"></div>
+                    <div class="step"><div class="step-num">2</div><span>Interview</span></div>
+                    <div class="step-connector"></div>
+                    <div class="step"><div class="step-num">3</div><span>Report</span></div>
+                </div>""")
+
                 setup_error_box = gr.Markdown(
                     f"""
                     <div class="warning-box">
@@ -784,115 +894,170 @@ def build_ui() -> gr.Blocks:
                     else "",
                     visible=bool(_OLLAMA_ERROR),
                 )
-                gr.Markdown("## 1. Choose your interview type")
-                detected_role_state = gr.State(value=None)
-                role_dropdown = gr.Dropdown(
-                    choices=ROLES,
-                    value=ROLES[0],
-                    label="Interview Role / Domain",
-                    interactive=True,
-                )
-                role_mismatch_box = gr.Markdown(visible=False)
-                switch_role_btn = gr.Button("⚡ Switch to Auto-Detected Role", visible=False)
-                gr.Markdown("## 2. Options")
-                num_questions_dropdown = gr.Dropdown(
-                    choices=[3, 5, 7, 10],
-                    value=5,
-                    label="Number of Questions",
-                    info="Select 3, 5, 7, or 10 questions for your interview session.",
-                    interactive=True,
-                )
-                timer_allotment_dropdown = gr.Dropdown(
-                    choices=[60, 90, 120],
-                    value=90,
-                    label="Per-Question Timer (seconds)",
-                    info="Warning tones fire at 66% (amber) and 90% (red) elapsed time.",
-                    interactive=True,
-                )
-                gemma_audio_checkbox = gr.Checkbox(
-                    label="🎙️ Enable Gemma 4 Native Audio Perception for ALL turns",
-                    value=False,
-                    info="Turn 1 uses Gemma 4 native audio by default. Check this to use Gemma 4 native audio for all turns.",
-                )
-                resume_file = gr.File(
-                    label="📄 Upload Resume / JD (.pdf, .txt, .md) — enables resume-grounded questioning",
-                    file_types=[".pdf", ".txt", ".md"],
-                    type="filepath",
-                )
-                resume_status_box = gr.Markdown(visible=False)
-                with gr.Accordion("📊 Resume ATS Score", open=True, visible=False) as ats_accordion:
-                    ats_score_box = gr.Markdown("")
-                gr.Markdown("## 3. Test your microphone")
-                mic_test = gr.Audio(
-                    sources=["microphone"],
-                    label="Record 2 seconds and listen back to confirm your mic works",
-                    type="filepath",
-                )
-                gr.Markdown(
-                    "> **Microphone permission:** If your browser asks for microphone access, click **Allow**. "
-                    "If the Record button is greyed out, check your browser's site permissions and reload."
-                )
-                start_btn = gr.Button("▶ Start Interview", variant="primary", size="lg")
+
+                # ── Step 1: Interview Type ──────────────────────────────────
+                with gr.Group(elem_classes=["setup-card"]):
+                    gr.HTML("""<div class="setup-card-header">
+                        <div class="card-num">1</div>
+                        <div><div class="card-title">Choose Your Interview Type</div>
+                        <div class="card-subtitle">Select the role and domain for your mock interview</div></div>
+                    </div>""")
+                    detected_role_state = gr.State(value=None)
+                    role_dropdown = gr.Dropdown(
+                        choices=ROLES,
+                        value=ROLES[0],
+                        label="Interview Role / Domain",
+                        interactive=True,
+                    )
+                    role_mismatch_box = gr.Markdown(visible=False)
+                    switch_role_btn = gr.Button("⚡ Switch to Auto-Detected Role", visible=False, size="sm")
+
+                # ── Step 2: Session Options ─────────────────────────────────
+                with gr.Group(elem_classes=["setup-card"]):
+                    gr.HTML("""<div class="setup-card-header">
+                        <div class="card-num">2</div>
+                        <div><div class="card-title">Session Options</div>
+                        <div class="card-subtitle">Configure question count, timer, audio engine, and resume</div></div>
+                    </div>""")
+                    with gr.Row():
+                        num_questions_dropdown = gr.Dropdown(
+                            choices=[3, 5, 7, 10],
+                            value=5,
+                            label="Number of Questions",
+                            info="Select 3, 5, 7, or 10 questions for your interview session.",
+                            interactive=True,
+                        )
+                        timer_allotment_dropdown = gr.Dropdown(
+                            choices=[60, 90, 120],
+                            value=90,
+                            label="Per-Question Timer (seconds)",
+                            info="Warning tones fire at 66% (amber) and 90% (red) elapsed time.",
+                            interactive=True,
+                        )
+                    gemma_audio_checkbox = gr.Checkbox(
+                        label="🎙️ Enable Gemma 4 Native Audio Perception for ALL turns",
+                        value=False,
+                        info="Turn 1 uses Gemma 4 native audio by default. Check this to use Gemma 4 native audio for all turns.",
+                    )
+                    gr.HTML('<hr class="section-divider">')
+                    resume_file = gr.File(
+                        label="📄 Upload Resume / JD (.pdf, .txt, .md) — enables resume-grounded questioning",
+                        file_types=[".pdf", ".txt", ".md"],
+                        type="filepath",
+                    )
+                    resume_status_box = gr.Markdown(visible=False)
+                    with gr.Accordion("📊 Resume ATS Score", open=True, visible=False) as ats_accordion:
+                        ats_score_box = gr.Markdown("")
+
+                # ── Step 3: Microphone Test ─────────────────────────────────
+                with gr.Group(elem_classes=["setup-card"]):
+                    gr.HTML("""<div class="setup-card-header">
+                        <div class="card-num">3</div>
+                        <div><div class="card-title">Test Your Microphone</div>
+                        <div class="card-subtitle">Record 2 seconds and listen back to confirm your mic works</div></div>
+                    </div>""")
+                    mic_test = gr.Audio(
+                        sources=["microphone"],
+                        label="Mic Test",
+                        type="filepath",
+                    )
+                    gr.Markdown(
+                        "> **Microphone permission:** If your browser asks for microphone access, click **Allow**. "
+                        "If the Record button is greyed out, check your browser's site permissions and reload."
+                    )
+
+                # ── Start Interview CTA ─────────────────────────────────────
+                start_btn = gr.Button("▶ Start Interview", variant="primary", size="lg", elem_classes=["cta-button"])
 
             # ── Screen 2: Live Interview ───────────────────────────────────────
             with gr.Tab("Live Interview", id="interview"):
+                # Step indicator
+                gr.HTML("""<div class="step-indicator">
+                    <div class="step completed"><div class="step-num">✓</div><span>Setup</span></div>
+                    <div class="step-connector done"></div>
+                    <div class="step active"><div class="step-num">2</div><span>Interview</span></div>
+                    <div class="step-connector"></div>
+                    <div class="step"><div class="step-num">3</div><span>Report</span></div>
+                </div>""")
+
+                # Turn progress
                 turn_counter = gr.Markdown("Question 1 of 5")
                 question_timer_box = gr.HTML(_build_timer_html(90))
-                question_text = gr.Markdown("## 💬 Interviewer's Question\n\n*Your first question will appear here after starting the interview.*")
-                # The output audio component renders Gradio's full player once a
-                # question is generated: play/pause, seek, playback speed, and
-                # replay controls.  Keeping it non-interactive prevents users
-                # from replacing the interviewer question with their own file.
-                question_audio = gr.Audio(
-                    label="Question audio player",
-                    autoplay=True,
-                    interactive=False,
-                    elem_id="question-audio-player",
-                    visible=False,
-                )
-                gr.Markdown("---")
-                gr.Markdown("### Your Answer")
-                analysis_status_component = gr.Markdown(visible=False)
-                stt_badge_component = gr.Markdown("🎙️ **STT Engine:** Gemma 4 is listening directly (Turn 1)")
-                fluency_badge_component = gr.Markdown("📊 **Fluency Signal:** 🟢 Confident (Low fillers/hedging)")
-                vad_status = gr.Markdown("🎙️ **VAD Status:** Listening...")
-                answer_audio = gr.Audio(
-                    sources=["microphone"],
-                    label="🎤 Click Record, speak your answer (VAD auto-detects end of speech or click Stop)",
-                    type="filepath",
-                )
-                transcript_box = gr.Textbox(
-                    label="📝 Your answer (transcribed)",
-                    interactive=False,
-                    lines=4,
-                    placeholder="Transcript will appear here after you stop recording…",
-                )
+
+                # Question card
+                with gr.Group(elem_classes=["question-card"]):
+                    question_text = gr.Markdown("## 💬 Interviewer's Question\n\n*Your first question will appear here after starting the interview.*")
+                    question_audio = gr.Audio(
+                        label="Question audio player",
+                        autoplay=True,
+                        interactive=False,
+                        elem_id="question-audio-player",
+                        visible=False,
+                    )
+
+                # Answer section
+                with gr.Group(elem_classes=["answer-card"]):
+                    gr.HTML('<div class="section-heading">🎤 Your Answer</div>')
+
+                    # Status strip
+                    with gr.Row(elem_classes=["status-strip"]):
+                        stt_badge_component = gr.Markdown("⚡ **STT Engine:** Standby")
+                        fluency_badge_component = gr.Markdown("📊 **Fluency Signal:** Standby")
+                        vad_status = gr.Markdown("🎙️ **VAD Status:** Listening...")
+
+                    analysis_status_component = gr.Markdown(visible=False)
+                    answer_audio = gr.Audio(
+                        sources=["microphone"],
+                        label="🎤 Click Record, speak your answer (VAD auto-detects end of speech or click Stop)",
+                        type="filepath",
+                    )
+                    transcript_box = gr.Textbox(
+                        label="📝 Your answer (transcribed)",
+                        interactive=False,
+                        lines=4,
+                        placeholder="Transcript will appear here after you stop recording…",
+                    )
+
                 submit_error_box = gr.Markdown(visible=False)
                 with gr.Row():
-                    submit_btn = gr.Button("✅ Submit Answer", variant="primary")
-                    skip_btn = gr.Button("⏭ Skip Question", variant="secondary")
+                    submit_btn = gr.Button("✅ Submit Answer", variant="primary", elem_classes=["btn-primary"])
+                    skip_btn = gr.Button("⏭ Skip Question", variant="secondary", elem_classes=["btn-secondary"])
                 finish_btn = gr.Button(
                     "🏁 Finish & Generate Report",
                     variant="stop",
                     visible=False,
+                    elem_classes=["btn-finish"],
                 )
 
             # ── Screen 3: Report ──────────────────────────────────────────────
             with gr.Tab("Report", id="report"):
-                gr.Markdown("## 📊 Your Interview Report")
-                scorecard_md = gr.Markdown("*Scorecard will appear here after your session.*")
-                ats_report_box = gr.Markdown(visible=False)
+                # Step indicator
+                gr.HTML("""<div class="step-indicator">
+                    <div class="step completed"><div class="step-num">✓</div><span>Setup</span></div>
+                    <div class="step-connector done"></div>
+                    <div class="step completed"><div class="step-num">✓</div><span>Interview</span></div>
+                    <div class="step-connector done"></div>
+                    <div class="step active"><div class="step-num">3</div><span>Report</span></div>
+                </div>""")
+
+                scorecard_md = gr.Markdown("*Your interview report will appear here after completing your session.*")
+
+                with gr.Group(elem_classes=["ats-card"]):
+                    ats_report_box = gr.Markdown(visible=False)
 
                 with gr.Row():
-                    radar_plot = gr.Plot(label="🕸️ 5-Dimension Rubric Radar Chart")
-                    bar_plot = gr.Plot(label="📊 Dimension Scores Bar Chart")
+                    with gr.Group(elem_classes=["chart-card"]):
+                        radar_plot = gr.Plot(label="🕸️ Rubric Radar Chart")
+                    with gr.Group(elem_classes=["chart-card"]):
+                        bar_plot = gr.Plot(label="📊 Dimension Scores")
 
-                with gr.Accordion("📃 Full Transcript", open=False):
+                with gr.Accordion("📃 Full Transcript", open=False, elem_classes=["transcript-accordion"]):
                     transcript_full = gr.Markdown("*Transcript will appear here.*")
 
                 pdf_download = gr.File(label="⬇️ Download PDF Report", visible=False)
 
-                new_session_btn = gr.Button("🔄 Start New Session", variant="secondary")
+                with gr.Row(elem_classes=["report-actions"]):
+                    new_session_btn = gr.Button("🔄 Start New Session", variant="secondary", elem_classes=["btn-secondary"])
 
         # ── Event handlers ────────────────────────────────────────────────────
 
