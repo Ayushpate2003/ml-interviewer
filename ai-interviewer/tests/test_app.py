@@ -186,10 +186,19 @@ def test_process_recording_stop_decouples_optional_failures(mock_transcribe, moc
         "resume_mode": "generic",
     }
 
-    next_state, transcript, stt_badge, fluency_badge, vad_status, submit_error = process_recording_stop("fake.wav", st)
+    steps = list(process_recording_stop("fake.wav", st))
+    assert len(steps) == 2
+    # Step 1: Immediate unified loading state
+    loading_step = steps[0]
+    assert loading_step[6].get("visible") is True
+    assert "Analyzing your answer" in loading_step[6].get("value", "")
+
+    # Step 2: Completion state with error isolation
+    next_state, transcript, stt_badge, fluency_badge, vad_status, submit_error, status_update = steps[1]
     assert next_state["pending_transcript"] == "Transcript text"
     assert transcript == "Transcript text"
     assert "STT Engine" in stt_badge
     assert "Unavailable" in fluency_badge
     assert "unavailable" in vad_status.lower()
     assert submit_error.get("visible") is False
+    assert status_update.get("visible") is False

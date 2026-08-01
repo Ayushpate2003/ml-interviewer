@@ -290,24 +290,52 @@ def _transcribe_candidate_audio(audio_input: Any, state: dict) -> tuple[str, str
         return "", "⚠️ STT Engine: Error (see logs)"
 
 
-def process_recording_stop(audio_input: Any, state: dict) -> tuple:
+def process_recording_stop(audio_input: Any, state: dict):
     """
     Stop-recording entry point for transcript + live analysis.
-    Returns: (state, transcript, stt_badge, fluency_badge, vad_status, submit_error)
+    Yields:
+      1. Immediate unified loading indicator ("⏳ Analyzing your answer...").
+      2. Final atomic grouped outputs (state, transcript, stt_badge, fluency_badge, vad_status, submit_error, analysis_status_update).
     """
-    try:
-        if state is None or state.get("finished"):
-            return (
-                state,
-                "",
-                "⚡ STT Engine: Standby",
-                "📊 Fluency Signal: Standby",
-                "🎙️ **VAD Status:** Listening...",
-                gr.update(value="", visible=False),
-            )
+    if state is None or state.get("finished"):
+        yield (
+            state,
+            "",
+            "⚡ STT Engine: Standby",
+            "📊 Fluency Signal: Standby",
+            "🎙️ **VAD Status:** Listening...",
+            gr.update(value="", visible=False),
+            gr.update(value="", visible=False),
+        )
+        return
 
+    normalized = _normalize_audio_input(audio_input)
+    if not normalized:
+        yield (
+            state,
+            "",
+            "⚡ STT Engine: Standby",
+            "📊 Fluency Signal: Standby",
+            "🎙️ **VAD Status:** Listening...",
+            gr.update(value="", visible=False),
+            gr.update(value="", visible=False),
+        )
+        return
+
+    # Step 1: Yield immediate unified loading state
+    yield (
+        state,
+        "",
+        "⚡ STT Engine: Processing...",
+        "📊 Fluency Signal: Analyzing...",
+        "🎙️ **VAD Status:** Analyzing...",
+        gr.update(value="", visible=False),
+        gr.update(value="⏳ **Analyzing your answer...**", visible=True),
+    )
+
+    # Step 2: Run pipeline with error isolation
+    try:
         vad_msg = "🎙️ Listening..."
-        normalized = _normalize_audio_input(audio_input)
         if normalized:
             try:
                 _, vad_msg = check_end_of_speech(normalized)
@@ -336,10 +364,18 @@ def process_recording_stop(audio_input: Any, state: dict) -> tuple:
                 visible=True,
             )
 
-        return state, transcript, stt_badge, fluency_badge, f"🎙️ **VAD Status:** {vad_msg}", submit_error
+        yield (
+            state,
+            transcript,
+            stt_badge,
+            fluency_badge,
+            f"🎙️ **VAD Status:** {vad_msg}",
+            submit_error,
+            gr.update(value="", visible=False),
+        )
     except Exception:
         logger.exception("Stop-recording pipeline failed with unhandled exception")
-        return (
+        yield (
             state,
             "",
             "⚠️ STT Engine: Error (see logs)",
@@ -349,6 +385,7 @@ def process_recording_stop(audio_input: Any, state: dict) -> tuple:
                 value="⚠️ Recording processing failed unexpectedly. Please try recording again.",
                 visible=True,
             ),
+            gr.update(value="", visible=False),
         )
 
 
@@ -639,6 +676,7 @@ def build_ui() -> gr.Blocks:
                 )
                 gr.Markdown("---")
                 gr.Markdown("### Your Answer")
+                analysis_status_component = gr.Markdown(visible=False)
                 stt_badge_component = gr.Markdown("🎙️ **STT Engine:** Gemma 4 is listening directly (Turn 1)")
                 fluency_badge_component = gr.Markdown("📊 **Fluency Signal:** 🟢 Confident (Low fillers/hedging)")
                 vad_status = gr.Markdown("🎙️ **VAD Status:** Listening...")
@@ -683,12 +721,21 @@ def build_ui() -> gr.Blocks:
 
         # Stop-recording pipeline: transcript + optional signals.
         def _on_audio_change(audio, st):
-            return process_recording_stop(audio, st)
+            yield from process_recording_stop(audio, st)
 
         answer_audio.change(
             fn=_on_audio_change,
             inputs=[answer_audio, state],
-            outputs=[state, transcript_box, stt_badge_component, fluency_badge_component, vad_status, submit_error_box],
+            outputs=[
+                state,
+                transcript_box,
+                stt_badge_component,
+                fluency_badge_component,
+                vad_status,
+                submit_error_box,
+                analysis_status_component,
+            ],
+            show_progress="hidden",
         )
 
         # Auto-start if user switches to Live Interview tab directly
