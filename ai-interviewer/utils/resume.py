@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 import requests
 
-from llm.client import OLLAMA_BASE_URL, get_active_model_tag
+from llm.client import _chat, get_active_model_tag
 
 logger = logging.getLogger(__name__)
 
@@ -129,19 +129,7 @@ def detect_resume_role_and_highlights(
     )
 
     try:
-        model_tag = get_active_model_tag()
-        payload = {
-            "model": model_tag,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-            "options": {"temperature": 0.1, "num_predict": 180},
-        }
-
-        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=30.0)
-        resp.raise_for_status()
-
-        data = resp.json()
-        raw_reply = data.get("message", {}).get("content", "").strip()
+        raw_reply = _chat([{"role": "user", "content": prompt}], temperature=0.1, num_predict=512).strip()
 
         highlights = ""
         detected_role = None

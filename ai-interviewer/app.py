@@ -1196,6 +1196,7 @@ def build_ui() -> gr.Blocks:
                         visible=True,
                     ),
                     gr.skip(),
+                    gr.skip(),
                 )
 
             if finished:
