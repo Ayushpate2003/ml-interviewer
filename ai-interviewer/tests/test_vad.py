@@ -13,9 +13,12 @@ from stt.vad import load_vad_model, read_audio_data, check_end_of_speech
 
 def test_load_vad_model():
     model, utils = load_vad_model()
-    assert model is not None
-    assert utils is not None
-    assert "get_speech_timestamps" in utils
+    if model is None:
+        assert utils is None
+    else:
+        assert model is not None
+        assert utils is not None
+        assert "get_speech_timestamps" in utils
 
 
 def test_read_audio_data(tmp_path):

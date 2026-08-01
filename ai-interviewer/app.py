@@ -475,46 +475,56 @@ def generate_final_report(state: dict) -> tuple:
 
 
 def _create_report_charts(scorecard: dict):
+    if not scorecard:
+        return None, None
+
     dims = scorecard.get("dimensions") or []
     if not dims:
         return None, None
 
-    dim_names = [d.get("name", "").replace("_", " ").title() for d in dims]
-    dim_scores = [float(d.get("score") or 0.0) for d in dims]
+    try:
+        dim_names = [
+            str(d.get("name") or d.get("dimension") or "").replace("_", " ").title()
+            for d in dims
+        ]
+        dim_scores = [float(d.get("score") or 0.0) for d in dims]
 
-    import plotly.express as px
-    import plotly.graph_objects as go
+        import plotly.express as px
+        import plotly.graph_objects as go
 
-    # Radar chart
-    fig_radar = go.Figure(
-        data=go.Scatterpolar(
-            r=dim_scores + [dim_scores[0]],
-            theta=dim_names + [dim_names[0]],
-            fill="toself",
-            name="Rubric Score",
-            line_color="#6366F1",
+        # Radar chart
+        fig_radar = go.Figure(
+            data=go.Scatterpolar(
+                r=dim_scores + [dim_scores[0]],
+                theta=dim_names + [dim_names[0]],
+                fill="toself",
+                name="Rubric Score",
+                line_color="#6366F1",
+            )
         )
-    )
-    fig_radar.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-        showlegend=False,
-        margin=dict(l=30, r=30, t=30, b=30),
-        title="5-Dimension Rubric Radar Chart",
-    )
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+            showlegend=False,
+            margin=dict(l=30, r=30, t=30, b=30),
+            title="5-Dimension Rubric Radar Chart",
+        )
 
-    # Bar chart
-    fig_bar = px.bar(
-        x=dim_names,
-        y=dim_scores,
-        labels={"x": "Dimension", "y": "Score (0-5)"},
-        title="Rubric Dimension Breakdown",
-        color=dim_scores,
-        color_continuous_scale="Viridis",
-        range_y=[0, 5.5],
-    )
-    fig_bar.update_layout(margin=dict(l=30, r=30, t=30, b=30))
+        # Bar chart
+        fig_bar = px.bar(
+            x=dim_names,
+            y=dim_scores,
+            labels={"x": "Dimension", "y": "Score (0-5)"},
+            title="Rubric Dimension Breakdown",
+            color=dim_scores,
+            color_continuous_scale="Viridis",
+            range_y=[0, 5.5],
+        )
+        fig_bar.update_layout(margin=dict(l=30, r=30, t=30, b=30))
 
-    return fig_radar, fig_bar
+        return fig_radar, fig_bar
+    except Exception as exc:
+        logger.warning("Failed to render Plotly report charts (degrading gracefully to table): %s", exc)
+        return None, None
 
 
 def _format_scorecard_md(scorecard: dict) -> str:
@@ -666,10 +676,6 @@ def build_ui() -> gr.Blocks:
                     transcript_full = gr.Markdown("*Transcript will appear here.*")
 
                 pdf_download = gr.File(label="⬇️ Download PDF Report", visible=False)
-
-                gr.Markdown("---")
-                gr.Markdown("### 🌐 Live Visual Companion View")
-                gr.HTML('<iframe src="http://localhost:8501" style="width:100%; height:750px; border:1px solid #334155; border-radius:12px;"></iframe>')
 
                 new_session_btn = gr.Button("🔄 Start New Session", variant="secondary")
 
