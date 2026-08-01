@@ -14,7 +14,12 @@
 
 https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4
 
-> 💡 *If the inline video player does not render automatically above, click to play [mlinterview.mp4](https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4).*
+### 🌐 Portable Fallback for Kaggle Writeup & External Platforms
+
+[![Privacy-First AI Interviewer Demo Video](thumbnail.png)](https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4)
+
+> 💡 **Kaggle / External Writeup Note**: GitHub's inline video player does not embed on external sites like Kaggle. Use the clickable thumbnail snippet above, or replace `VIDEO_URL_HERE` with your unlisted YouTube/Drive link:  
+> `[![Demo Video](thumbnail.png)](VIDEO_URL_HERE)`
 
 ---
 
