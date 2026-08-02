@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 
 import requests
@@ -278,7 +279,7 @@ def score_session(
         },
     ]
 
-    raw = _chat(messages, temperature=0.2)  # low temp for structured output
+    raw = _chat(messages, temperature=0.2, num_predict=1536)  # low temp, generous token cap for JSON output
 
     try:
         return parse_score_json(raw)

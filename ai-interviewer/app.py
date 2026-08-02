@@ -762,16 +762,22 @@ def _format_scorecard_md(scorecard: dict) -> str:
 
     # Dimension cards
     for dim in scorecard.get("dimensions") or []:
-        name = dim.get("name", "").replace("_", " ").title()
-        try:
-            s = float(dim.get("score", 0))
-            tier = "high" if s >= 3.5 else "mid" if s >= 2.0 else "low"
-            pct = min(s / 5.0 * 100, 100)
-            score_text = f"{s:.1f}"
-        except (ValueError, TypeError):
+        name = str(dim.get("name") or dim.get("dimension") or "").replace("_", " ").title()
+        score_raw = dim.get("score")
+        if score_raw is not None:
+            try:
+                s = float(score_raw)
+                tier = "high" if s >= 3.5 else "mid" if s >= 2.0 else "low"
+                pct = min(s / 5.0 * 100, 100)
+                score_text = f"{s:.1f}"
+            except (ValueError, TypeError):
+                tier = "mid"
+                pct = 0
+                score_text = str(score_raw)
+        else:
             tier = "mid"
             pct = 0
-            score_text = str(dim.get("score", "N/A"))
+            score_text = "N/A"
         justification = dim.get("justification", "")
 
         html += f"""<div class="dimension-card">
