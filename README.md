@@ -1,4 +1,4 @@
-# Privacy-First AI Interviewer 🎙️🔒
+ # Privacy-First AI Interviewer 🎙️🔒
 
 > A 100% offline, single-machine spoken mock-interview platform powered by **Gemma 4** (`gemma4:4b` / `gemma4:e4b` via Ollama).  
 > Nothing you say, upload, or record ever leaves your local device.
