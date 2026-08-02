@@ -15,7 +15,7 @@
 
 https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4
 
-### 🌐 Portable Fallback for Kaggle Writeup & External Platforms
+## 🌐 Portable Fallback for Kaggle Writeup & External Platforms
 
 [![Privacy-First AI Interviewer Demo Video](thumbnail.png)](https://github.com/Ayushpate2003/ml-interviewer/raw/main/mlinterview.mp4)
 
