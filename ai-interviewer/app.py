@@ -49,7 +49,12 @@ from stt.transcribe import TranscriptionError, load_stt_model, transcribe
 from stt.vad import check_end_of_speech, load_vad_model
 from tts.speak import TTSError, load_tts_model, speak
 from utils.ats import calculate_ats_score
-from utils.resume import detect_resume_role_and_highlights, extract_resume_highlights, extract_text_from_file
+from utils.resume import (
+    detect_resume_role_and_highlights,
+    detect_unified_context_and_role,
+    extract_resume_highlights,
+    extract_text_from_file,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -108,6 +113,8 @@ def _new_state(
     *,
     resume_mode: str = "generic",
     resume_context: str = "",
+    jd_context: str = "",
+    personalization_mode: str = "generic",
 ) -> dict:
     """Create a fresh session state dict stored in gr.State."""
     session_id = create_session(
@@ -129,6 +136,8 @@ def _new_state(
         "gemma_audio_all_turns": gemma_audio_all_turns,
         "resume_mode": resume_mode,
         "resume_context": resume_context,
+        "jd_context": jd_context,
+        "personalization_mode": personalization_mode,
         "pending_transcript": "",
     }
 
@@ -139,8 +148,8 @@ def _add_to_history(state: dict, speaker: str, content: str) -> None:
     add_turn(DB_PATH, session_id=state["session_id"], speaker=speaker, content=content)
 
 
-def _format_question_md(q: str, topic: str | None = None, is_resume_anchored: bool = False) -> str:
-    """Format question text, resume badge, and optional probing chip for display in the Markdown component."""
+def _format_question_md(q: str, topic: str | None = None, personalization_mode: str | bool = "generic") -> str:
+    """Format question text, personalization badge, and optional probing chip for display in the Markdown component."""
     if not q or not q.strip():
         return "<div class='warning-box'>⚠️ <strong>No question generated.</strong> Please check if Ollama is running.</div>"
     if q.startswith("⚠️") or q.startswith("Error") or "Error" in q:
@@ -149,8 +158,13 @@ def _format_question_md(q: str, topic: str | None = None, is_resume_anchored: bo
         return q
 
     badges = []
-    if is_resume_anchored:
-        badges.append("📄 **Based on your resume**")
+    if personalization_mode == "both":
+        badges.append("📄 📋 **Grounded in your resume & Job Description**")
+    elif personalization_mode == "jd_only":
+        badges.append("📋 **Grounded in target Job Description**")
+    elif personalization_mode == "resume_only" or personalization_mode is True:
+        badges.append("📄 **Grounded in your resume**")
+
     if topic:
         badges.append(f"🔍 **Probing deeper on:** `{topic}`")
 
@@ -284,6 +298,7 @@ def start_interview(
     role: str,
     gemma_audio_all_turns: bool = False,
     resume_file: str | None = None,
+    jd_input: str | None = None,
     num_questions: int = 5,
     timer_seconds: int = 90,
 ) -> tuple:
@@ -314,12 +329,19 @@ def start_interview(
     try:
         max_turns = int(num_questions) if num_questions else 5
         t_sec = int(timer_seconds) if timer_seconds else 90
-        resume_context = ""
-        resume_mode = "generic"
-        if resume_file:
-            resume_context, _ = extract_resume_highlights(resume_file)
-            if resume_context.strip():
-                resume_mode = "resume"
+
+        resume_context, jd_context, _, status_notice, personalization_mode = detect_unified_context_and_role(
+            resume_file, jd_input, ROLES
+        )
+
+        if not resume_context and resume_file:
+            highlights, _ = extract_resume_highlights(resume_file)
+            if highlights and highlights.strip():
+                resume_context = highlights
+                if personalization_mode == "generic":
+                    personalization_mode = "resume_only"
+
+        resume_mode = "resume" if personalization_mode in ("resume_only", "both") else "generic"
 
         state = _new_state(
             role,
@@ -328,15 +350,23 @@ def start_interview(
             timer_seconds=t_sec,
             resume_mode=resume_mode,
             resume_context=resume_context,
+            jd_context=jd_context,
+            personalization_mode=personalization_mode,
         )
 
         if resume_file:
-            ats_info = calculate_ats_score(resume_file, role)
+            ats_info = calculate_ats_score(resume_file, role, jd_custom_input=jd_input)
             state["ats_info"] = ats_info
             save_ats_score(state["session_id"], ats_info, DB_PATH)
+        else:
+            state["ats_info"] = None
 
-        if resume_mode == "resume":
-            resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context for all {max_turns} turns."
+        if personalization_mode == "both":
+            resume_status = f"📄 Resume & 📋 JD mode enabled. Questions will be personalized at the intersection of your experience and job requirements."
+        elif personalization_mode == "jd_only":
+            resume_status = f"📋 Job Description mode enabled. Questions will be grounded in target JD requirements."
+        elif personalization_mode == "resume_only":
+            resume_status = f"📄 Resume mode enabled. Questions will be grounded in your resume context."
         else:
             resume_status = f"⚪ Generic mode (no resume detected). Role-based questions will be used for all {max_turns} turns."
 
@@ -345,6 +375,7 @@ def start_interview(
                 [],
                 role,
                 resume_context=resume_context,
+                jd_context=jd_context,
                 time_allotted_seconds=t_sec,
                 current_turn=1,
                 total_turns=max_turns,
@@ -365,10 +396,9 @@ def start_interview(
         turn_label = f"Question 1 of {max_turns}"
         timer_html = _build_timer_html(t_sec)
         resume_status_update = gr.update(value=resume_status, visible=bool(resume_status))
-        is_anchored = state.get("resume_mode") == "resume"
         return (
             state,
-            _format_question_md(question, topic, is_resume_anchored=is_anchored),
+            _format_question_md(question, topic, personalization_mode=personalization_mode),
             _question_audio_update(audio),
             turn_label,
             gr.update(visible=False),
@@ -568,12 +598,14 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
 
     try:
         resume_ctx = state.get("resume_context")
+        jd_ctx = state.get("jd_context")
         t_sec = state.get("timer_seconds", 90)
         cur_turn = state["turn_index"] + 1
         question, topic = get_next_question(
             state["history"],
             state["role"],
             resume_context=resume_ctx,
+            jd_context=jd_ctx,
             time_allotted_seconds=t_sec,
             current_turn=cur_turn,
             total_turns=max_turns,
@@ -591,8 +623,8 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
             logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
-    is_anchored = state.get("resume_mode") == "resume"
-    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
+    mode = state.get("personalization_mode", "generic")
+    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, personalization_mode=mode), _question_audio_update(audio), turn_label, False
 
 
 def skip_question(state: dict) -> tuple:
@@ -611,12 +643,14 @@ def skip_question(state: dict) -> tuple:
 
     try:
         resume_ctx = state.get("resume_context")
+        jd_ctx = state.get("jd_context")
         t_sec = state.get("timer_seconds", 90)
         cur_turn = state["turn_index"] + 1
         question, topic = get_next_question(
             state["history"],
             state["role"],
             resume_context=resume_ctx,
+            jd_context=jd_ctx,
             time_allotted_seconds=t_sec,
             current_turn=cur_turn,
             total_turns=max_turns,
@@ -631,11 +665,11 @@ def skip_question(state: dict) -> tuple:
         try:
             audio = speak(question)
         except Exception as exc:
-            logger.warning("TTS failed: %s", exc)
+            logger.warning("TTS failed on turn %d: %s", state["turn_index"], exc)
 
     turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
-    is_anchored = state.get("resume_mode") == "resume"
-    return state, "[skipped]", _format_question_md(question, topic, is_resume_anchored=is_anchored), _question_audio_update(audio), turn_label, False
+    mode = state.get("personalization_mode", "generic")
+    return state, "[skipped]", _format_question_md(question, topic, personalization_mode=mode), _question_audio_update(audio), turn_label, False
 
 
 def generate_final_report(state: dict) -> tuple:
@@ -647,6 +681,19 @@ def generate_final_report(state: dict) -> tuple:
 
     scorecard = score_session(state["history"], state["session_id"], state["role"])
     save_scores(DB_PATH, state["session_id"], scorecard.get("dimensions", []))
+
+    mode = state.get("personalization_mode", "generic")
+    role = state.get("role", "Backend Engineer")
+    if mode == "both":
+        note = f"🎯 Interview personalized against: **{role}** (Grounded in Resume & Job Description)"
+    elif mode == "jd_only":
+        note = f"📋 Interview personalized against: **{role}** (Grounded in Job Description)"
+    elif mode == "resume_only":
+        note = f"📄 Interview personalized against: **{role}** (Grounded in Resume)"
+    else:
+        note = f"⚙️ Standard Interview Session"
+
+    scorecard["personalization_note"] = note
 
     ats_info = state.get("ats_info") or get_ats_score(state["session_id"], DB_PATH)
     if ats_info and ats_info.get("score") is not None:
@@ -759,9 +806,11 @@ def _format_scorecard_md(scorecard: dict) -> str:
         score_display = str(overall)
 
     role = scorecard.get("role", "Interview")
+    note = scorecard.get("personalization_note", "")
+    note_html = f'<div class="personalization-note">{note}</div>\n' if note else ""
 
     # Score hero
-    html = f"""<div class="score-hero">
+    html = f"""{note_html}<div class="score-hero">
         <div class="score-ring {score_class}">{score_display}</div>
         <div class="score-label">Overall Score / 5.0</div>
         <div class="score-role">{role} Performance</div>
@@ -984,8 +1033,14 @@ def build_ui() -> gr.Blocks:
                         info="Turn 1 uses Gemma 4 native audio by default. Check this to use Gemma 4 native audio for all turns.",
                     )
                     gr.HTML('<hr class="section-divider">')
+                    jd_text_input = gr.Textbox(
+                        label="📋 Paste Job Description (optional) — grounds questions in target JD requirements",
+                        placeholder="Paste job posting text, required skills, or key responsibilities here...",
+                        lines=4,
+                        interactive=True,
+                    )
                     resume_file = gr.File(
-                        label="📄 Upload Resume / JD (.pdf, .txt, .md) — enables resume-grounded questioning",
+                        label="📄 Upload Resume / JD File (.pdf, .txt, .md) — enables resume/JD-grounded questioning",
                         file_types=[".pdf", ".txt", ".md"],
                         type="filepath",
                     )
@@ -1137,9 +1192,9 @@ def build_ui() -> gr.Blocks:
             outputs=[state, question_text, question_audio, turn_counter, question_timer_box],
         )
 
-        # Auto-detect role & extract highlights on resume upload
-        def _on_resume_upload(file_path, current_role):
-            if not file_path:
+        # Auto-detect role & extract highlights on resume/JD input change
+        def _on_inputs_change(file_path, jd_text, current_role):
+            if not file_path and not (jd_text and jd_text.strip()):
                 return (
                     gr.update(),
                     gr.update(value="", visible=False),
@@ -1149,14 +1204,18 @@ def build_ui() -> gr.Blocks:
                     gr.update(value="", visible=False),
                     gr.update(visible=False),
                 )
-            highlights, detected_role, status_notice = detect_resume_role_and_highlights(file_path, ROLES)
+            resume_ctx, jd_ctx, detected_role, status_notice, mode = detect_unified_context_and_role(
+                file_path, jd_text, ROLES
+            )
             selected_role = detected_role if detected_role else current_role
 
-            try:
-                ats_info = calculate_ats_score(file_path, selected_role)
-            except Exception as exc:
-                logger.warning("ATS scoring failed: %s", exc)
-                ats_info = {"score": None, "formatted_md": "⚠️ ATS scoring unavailable for this file"}
+            ats_info = {}
+            if file_path:
+                try:
+                    ats_info = calculate_ats_score(file_path, selected_role, jd_custom_input=jd_text)
+                except Exception as exc:
+                    logger.warning("ATS scoring failed: %s", exc)
+                    ats_info = {"score": None, "formatted_md": "⚠️ ATS scoring unavailable for this file"}
 
             status_update = gr.update(value=status_notice, visible=bool(status_notice))
             mismatch_update = gr.update(value="", visible=False)
@@ -1172,15 +1231,21 @@ def build_ui() -> gr.Blocks:
             return selected_role, status_update, detected_role, mismatch_update, mismatch_btn_update, ats_md_update, ats_acc_update
 
         resume_file.change(
-            fn=_on_resume_upload,
-            inputs=[resume_file, role_dropdown],
+            fn=_on_inputs_change,
+            inputs=[resume_file, jd_text_input, role_dropdown],
+            outputs=[role_dropdown, resume_status_box, detected_role_state, role_mismatch_box, switch_role_btn, ats_score_box, ats_accordion],
+        )
+
+        jd_text_input.change(
+            fn=_on_inputs_change,
+            inputs=[resume_file, jd_text_input, role_dropdown],
             outputs=[role_dropdown, resume_status_box, detected_role_state, role_mismatch_box, switch_role_btn, ats_score_box, ats_accordion],
         )
 
         # Role dropdown manual selection change check against detected_role
         def _on_role_change(selected_role, detected_role):
             if detected_role and selected_role != detected_role:
-                msg = f"💡 **Suggestion:** Your resume matches **{detected_role}** best, but **{selected_role}** is selected."
+                msg = f"💡 **Suggestion:** Your context matches **{detected_role}** best, but **{selected_role}** is selected."
                 return gr.update(value=msg, visible=True), gr.update(visible=True)
             return gr.update(value="", visible=False), gr.update(visible=False)
 
@@ -1205,7 +1270,7 @@ def build_ui() -> gr.Blocks:
         # Start interview
         start_btn.click(
             fn=start_interview,
-            inputs=[role_dropdown, gemma_audio_checkbox, resume_file, num_questions_dropdown, timer_allotment_dropdown],
+            inputs=[role_dropdown, gemma_audio_checkbox, resume_file, jd_text_input, num_questions_dropdown, timer_allotment_dropdown],
             outputs=[state, question_text, question_audio, turn_counter, setup_error_box, resume_status_box, question_timer_box, tabs],
         )
 

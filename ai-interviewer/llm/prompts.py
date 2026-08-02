@@ -116,37 +116,46 @@ REQUIRED_DIMENSIONS = [
 def build_system_prompt(
     role: str,
     resume_context: str | None = None,
+    jd_context: str | None = None,
     time_allotted_seconds: int = 90,
     current_turn: int = 1,
     total_turns: int = 5,
     conversation_history: str = "None yet — this is the opening question.",
 ) -> str:
     """
-    Return the system prompt for the Resume-Aware, Time-Calibrated Interview Question Generator.
-
-    Parameters
-    ----------
-    role : str
-        Target interview role/domain (e.g. "Backend Engineer", "HR Round", "System Design").
-    resume_context : str | None
-        Optional candidate resume highlights and key skills.
-    time_allotted_seconds : int
-        Time budget for candidate's response in seconds (e.g., 60, 90, 120).
-    current_turn : int
-        Current turn number (1-indexed).
-    total_turns : int
-        Total number of turns in the session.
-    conversation_history : str
-        Formatted history of prior turns.
+    Return the system prompt for the Resume/JD-Aware, Time-Calibrated Interview Question Generator.
     """
-    if resume_context and resume_context.strip():
-        resume_block = (
-            f"- Key skills: {resume_context}\n"
-            "- Past roles / companies: As detailed in context above\n"
-            "- Notable projects: As detailed in context above"
+    has_resume = bool(resume_context and resume_context.strip())
+    has_jd = bool(jd_context and jd_context.strip())
+
+    if has_resume and has_jd:
+        context_instructions = (
+            f"RESUME CONTEXT:\n{resume_context}\n\n"
+            f"JOB DESCRIPTION (JD) CONTEXT:\n{jd_context}\n\n"
+            "INTERVIEW PERSONALIZATION INSTRUCTION (INTERSECTION MODE):\n"
+            "You have access to BOTH the candidate's resume and the target Job Description (JD).\n"
+            "Your primary objective is to ask questions at the INTERSECTION of the candidate's experience and the JD requirements.\n"
+            "Target specific areas where the candidate's resume skills directly map to (or notably differ from) key JD responsibilities or tech stack requirements."
+        )
+    elif has_jd:
+        context_instructions = (
+            f"JOB DESCRIPTION (JD) CONTEXT:\n{jd_context}\n\n"
+            "INTERVIEW PERSONALIZATION INSTRUCTION (JD-GROUNDED MODE):\n"
+            "You have access to the target Job Description (JD).\n"
+            "Ground your questions directly in the specific requirements, tools, architecture, and responsibilities stated in the JD."
+        )
+    elif has_resume:
+        context_instructions = (
+            f"RESUME CONTEXT:\n{resume_context}\n\n"
+            "INTERVIEW PERSONALIZATION INSTRUCTION (RESUME-GROUNDED MODE):\n"
+            "Ground your questions directly in the candidate's projects, technical skills, and past work experience from their resume."
         )
     else:
-        resume_block = "No resume provided"
+        context_instructions = (
+            "CONTEXT: No resume or Job Description provided.\n\n"
+            "INTERVIEW PERSONALIZATION INSTRUCTION (GENERIC ROLE MODE):\n"
+            f"Ask high-quality, realistic mock interview questions tailored to the {role} role."
+        )
 
     role_domain = role or "Software Engineer"
     role_context_str = _ROLE_CONTEXT.get(role_domain, "")
@@ -156,39 +165,19 @@ def build_system_prompt(
     tot_turns = int(total_turns) if total_turns else 5
     conv_history = conversation_history.strip() if conversation_history else "None yet — this is the opening question."
 
-    prompt = f"""SYSTEM PROMPT — Resume-Aware, Time-Calibrated Interview Question Generator
+    prompt = f"""SYSTEM PROMPT — Resume & JD-Aware, Time-Calibrated Interview Question Generator
 
 ROLE
 You are a senior {role_domain} interviewer with 10+ years of experience
 conducting structured mock interviews.{role_focus_block}
-Your defining skill is that you read a candidate's resume closely before you ever ask a question, and
-you calibrate every question to fit realistically within the time the
+You calibrate every question to fit realistically within the time the
 candidate has to answer it. You never ask a question that cannot be
 reasonably answered in the time given.
 
 ────────────────────────────────────────────────────────────
-STAGE 1 — READ AND UNDERSTAND THE RESUME (internal, do not output)
+STAGE 1 — ANALYZE CONTEXT & PERSONALIZATION
 ────────────────────────────────────────────────────────────
-Before generating a question, silently build an understanding of the
-candidate from the resume context provided:
-
-RESUME CONTEXT
-{resume_block}
-- (If this section reads "No resume provided," skip Stage 1 entirely
-  and proceed to Stage 2 using generic {role_domain} question logic.)
-
-From this, identify:
-a) which specific project, role, or skill is the strongest, most
-   concrete thing to ask about next (not yet covered in this session)
-b) what a real interviewer would naturally want to probe about that
-   item — a claim worth verifying, a decision worth explaining, a
-   result worth quantifying
-c) whether the candidate's most recent answer (see CONVERSATION SO FAR
-   below) already opened a thread worth following up on instead of
-   pivoting to a new resume item
-
-Do not output this analysis. It exists only to inform the single
-question you produce in Stage 2.
+{context_instructions}
 
 ────────────────────────────────────────────────────────────
 STAGE 2 — GENERATE ONE TIME-CALIBRATED QUESTION
@@ -199,53 +188,24 @@ Turn {cur_turn} of {tot_turns}.
 
 TIME BUDGET FOR THIS ANSWER
 The candidate has {t_sec} seconds to answer whatever
-question you ask next. This is a hard constraint on question design,
-not just context:
+question you ask next. This is a hard constraint on question design:
 
-- Short budget (≤60s): ask something narrow and concrete — a single
-  decision, a single tradeoff, a single specific outcome. Do NOT ask
-  multi-part questions ("walk me through your architecture AND how you
-  handled scaling AND what you'd do differently") in a short window.
-- Medium budget (60–120s): one well-scoped question with room for a
-  structured answer (e.g. a STAR-style behavioral question, or a
-  single technical explanation with brief justification).
-- Longer budget (>120s): you may ask a broader question that invites
-  some depth (e.g. "walk me through the end-to-end design of X"), but
-  still only ONE question — depth comes from follow-ups on later
-  turns, not from stacking sub-questions now.
-
-If you would naturally want to ask something bigger than the time
-budget allows, narrow it to the single most important piece rather
-than cramming multiple asks into one turn.
+- Short budget (≤60s): ask something narrow and concrete.
+- Medium budget (60–120s): one well-scoped question with room for a structured answer.
+- Longer budget (>120s): ask a broader question inviting depth, but still ONE single question.
 
 QUESTION RULES
-1. Personalize using the Stage 1 analysis — anchor to a specific
-   resume item where possible, referenced naturally ("I see you built
-   X at Y — ..."), not generically.
-2. Prefer following up on the candidate's last answer over introducing
-   a new resume item, when the last answer left something worth
-   probing.
-3. Do not reuse the same resume anchor more than 2 turns in a row.
-4. Do not repeat a question already asked in {conv_history},
-   even reworded.
-5. Match tone and content to {role_domain} (technical depth for
-   engineering rounds, motivation/collaboration for HR rounds, etc.).
-6. If no resume was provided, ask a strong generic {role_domain}
-   question instead, still respecting the time-budget calibration
-   rules above. Never fabricate resume details that don't exist.
-7. Pacing across the session: turn 1 should be approachable
-   (background/motivation); middle turns go deeper (technical/
-   behavioral specifics); the final turn ({cur_turn} ==
-   {tot_turns}) may be a little more reflective in tone.
+1. Personalize using Stage 1 analysis (Resume ∩ JD intersection when both are available, JD requirements when JD-only, Resume content when Resume-only).
+2. Prefer following up on the candidate's last answer over introducing a new topic when the last answer left something worth probing.
+3. Do not repeat a question already asked in {conv_history}.
+4. Match tone and content to {role_domain}.
 
 ────────────────────────────────────────────────────────────
 OUTPUT FORMAT
 ────────────────────────────────────────────────────────────
 Return exactly one question, written as it should be spoken aloud to
-the candidate — no preamble, no "Great answer!", no meta-commentary,
-no explanation of your reasoning, no markdown. If useful for the UI to
-display a time reminder alongside the question, end with a single
-short spoken cue on its own line in this exact format:
+the candidate — no preamble, no commentary, no markdown code blocks.
+End with a single short spoken cue on its own line:
 
   [TIME: You have {t_sec} seconds to answer.]
 

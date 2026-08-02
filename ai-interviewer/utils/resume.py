@@ -179,6 +179,147 @@ def detect_resume_role_and_highlights(
         return "", None, f"⚠️ Resume parsing fallback ({exc}): continuing with standard questions."
 
 
+def extract_text_from_file_or_string(input_val: Any) -> str:
+    """
+    Extract text whether input_val is a file path, Gradio File object, or plain string text.
+    """
+    if not input_val:
+        return ""
+    if isinstance(input_val, str) and not (Path(input_val).exists() and Path(input_val).is_file()):
+        return input_val.strip()
+    return extract_text_from_file(input_val)
+
+
+def extract_jd_highlights(
+    jd_input: Any,
+    valid_roles: list[str] | None = None,
+) -> tuple[str, str | None, str]:
+    """
+    Extract JD key requirements, skills, and classify the single best matching role from valid_roles.
+
+    Returns
+    -------
+    tuple[str, str | None, str]
+        (jd_highlights_summary, detected_role_or_None, status_notice)
+    """
+    if not jd_input:
+        return "", None, ""
+
+    raw_text = extract_text_from_file_or_string(jd_input)
+    if not raw_text or len(raw_text.strip()) < 20:
+        logger.warning("JD input unreadable or contains insufficient text.")
+        return "", None, "⚠️ Job Description text unreadable — continuing with standard questions."
+
+    truncated_text = raw_text[:3000]
+    roles_list = valid_roles or [
+        "Backend Engineer",
+        "Frontend Engineer",
+        "DevOps / SRE",
+        "Cloud Computing",
+        "HR Round",
+        "System Design",
+    ]
+    roles_formatted = ", ".join(f'"{r}"' for r in roles_list)
+
+    prompt = (
+        "Analyze this Job Description (JD) text.\n"
+        "1. Summarize the top 3 key responsibilities, required tech stack, and target seniority level in 2 concise sentences.\n"
+        f"2. Classify the job position's single best matching role from this EXACT list: [{roles_formatted}].\n\n"
+        f"JOB DESCRIPTION TEXT:\n{truncated_text}\n\n"
+        "Respond ONLY with a JSON object:\n"
+        '{"highlights": "<2 sentence summary>", "role": "<exact string from list or null>"}'
+    )
+
+    try:
+        raw_reply = _chat([{"role": "user", "content": prompt}], temperature=0.1, num_predict=512).strip()
+
+        highlights = ""
+        detected_role = None
+
+        try:
+            import json
+            import re
+
+            match = re.search(r"\{.*\}", raw_reply, re.DOTALL)
+            json_str = match.group(0) if match else raw_reply
+            parsed = json.loads(json_str)
+            highlights = parsed.get("highlights", "").strip()
+            role_cand = parsed.get("role", "")
+            if role_cand and isinstance(role_cand, str):
+                for r in roles_list:
+                    if r.lower() == role_cand.strip().lower():
+                        detected_role = r
+                        break
+        except Exception:
+            logger.warning("Could not parse JSON JD role response; attempting direct match.")
+            highlights = raw_reply
+            for r in roles_list:
+                if r.lower() in raw_reply.lower():
+                    detected_role = r
+                    break
+
+        status_notice = ""
+        if detected_role:
+            status_notice = f"📋 Auto-detected from Job Description: **{detected_role}** — change if needed."
+        elif highlights:
+            status_notice = f"📋 JD requirements seeded: {highlights[:100]}…"
+        else:
+            status_notice = "⚠️ Could not extract JD requirements — continuing with standard questions."
+
+        return highlights, detected_role, status_notice
+
+    except Exception as exc:
+        logger.warning("Gemma 4 JD extraction failed: %s", exc, exc_info=True)
+        return "", None, f"⚠️ JD parsing fallback ({exc}): continuing with standard questions."
+
+
+def detect_unified_context_and_role(
+    resume_input: Any = None,
+    jd_input: Any = None,
+    valid_roles: list[str] | None = None,
+) -> tuple[str, str, str | None, str, str]:
+    """
+    Process both optional resume and optional JD inputs.
+
+    Returns
+    -------
+    tuple[str, str, str | None, str, str]
+        (resume_context, jd_context, detected_role, status_notice, personalization_mode)
+        where personalization_mode is "both", "resume_only", "jd_only", or "generic"
+    """
+    resume_context = ""
+    resume_role = None
+    resume_notice = ""
+    if resume_input:
+        resume_context, resume_role, resume_notice = detect_resume_role_and_highlights(resume_input, valid_roles)
+
+    jd_context = ""
+    jd_role = None
+    jd_notice = ""
+    if jd_input:
+        jd_context, jd_role, jd_notice = extract_jd_highlights(jd_input, valid_roles)
+
+    # Role priority: JD role takes priority over resume role
+    detected_role = jd_role or resume_role
+
+    if resume_context and jd_context:
+        mode = "both"
+        status_notice = "📄 Resume & 📋 JD parsed."
+        if detected_role:
+            status_notice += f" Target role from JD: **{detected_role}**."
+    elif jd_context:
+        mode = "jd_only"
+        status_notice = jd_notice or "📋 JD parsed."
+    elif resume_context:
+        mode = "resume_only"
+        status_notice = resume_notice or "📄 Resume parsed."
+    else:
+        mode = "generic"
+        status_notice = ""
+
+    return resume_context, jd_context, detected_role, status_notice, mode
+
+
 def extract_resume_highlights(file_path: str | Path | dict | Any) -> tuple[str, str]:
     """
     Backward-compatible wrapper for extract_resume_highlights.

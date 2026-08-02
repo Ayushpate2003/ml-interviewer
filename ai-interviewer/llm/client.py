@@ -182,37 +182,19 @@ def get_next_question(
     history: list[dict],
     role: str,
     resume_context: str | None = None,
+    jd_context: str | None = None,
     time_allotted_seconds: int = 90,
     current_turn: int = 1,
     total_turns: int = 5,
 ) -> tuple[str, str | None]:
     """
     Generate the next interview question given the conversation history and time budget.
-
-    Parameters
-    ----------
-    history : list[dict]
-        Running turn list; each dict has ``speaker`` and ``content`` keys.
-    role : str
-        Interview role (e.g. "Backend Engineer").
-    resume_context : str | None
-        Optional candidate background/resume highlights to tailor questions.
-    time_allotted_seconds : int
-        Time budget for candidate's response in seconds (e.g., 60, 90, 120).
-    current_turn : int
-        Current turn number (1-indexed).
-    total_turns : int
-        Total number of turns in the session.
-
-    Returns
-    -------
-    tuple[str, str | None]
-        (question_text, followup_topic_or_None)
     """
     transcript = format_history_for_prompt(history)
     system_prompt = build_system_prompt(
         role,
         resume_context=resume_context,
+        jd_context=jd_context,
         time_allotted_seconds=time_allotted_seconds,
         current_turn=current_turn,
         total_turns=total_turns,
