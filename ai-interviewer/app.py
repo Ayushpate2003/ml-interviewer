@@ -37,6 +37,7 @@ from llm.client import (
     assess_answer_quality_and_difficulty,
     check_ollama_ready,
     generate_model_answers,
+    generate_per_question_feedback,
     generate_resume_improvements,
     get_next_question,
     score_session,
@@ -245,13 +246,12 @@ def _build_timer_html(timer_seconds: int = 90) -> str:
     return f"""<div id="timer-display" class="timer-display">
     ⏱️ Time Remaining: <span id="timer-counter">{sec}</span>s / {sec}s
 </div>
-<script>
-(function() {{
+<img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" style="display:none;" onload="(function(){{
     if (window._qTimer) clearInterval(window._qTimer);
     var total = {sec};
     var remaining = total;
-    var display = document.getElementById("timer-counter");
-    var box = document.getElementById("timer-display");
+    var display = document.getElementById('timer-counter');
+    var box = document.getElementById('timer-display');
     if (!display || !box) return;
 
     function playTone(freq, duration) {{
@@ -270,26 +270,27 @@ def _build_timer_html(timer_seconds: int = 90) -> str:
 
     window._qTimer = setInterval(function() {{
         remaining--;
+        var display = document.getElementById('timer-counter');
+        var box = document.getElementById('timer-display');
         if (display) display.innerText = Math.max(0, remaining);
         var pct = ((total - remaining) / total) * 100;
         if (pct >= 90) {{
-            if (box) {{ box.style.color = "#ef4444"; box.style.borderColor = "#ef4444"; }}
+            if (box) {{ box.style.color = '#ef4444'; box.style.borderColor = '#ef4444'; }}
             if (remaining === Math.floor(total * 0.10)) playTone(880, 0.3);
         }} else if (pct >= 66) {{
-            if (box) {{ box.style.color = "#f59e0b"; box.style.borderColor = "#f59e0b"; }}
+            if (box) {{ box.style.color = '#f59e0b'; box.style.borderColor = '#f59e0b'; }}
             if (remaining === Math.floor(total * 0.34)) playTone(660, 0.2);
         }}
         if (remaining <= 0) {{
             clearInterval(window._qTimer);
             if (box) {{
-                box.innerHTML = "⏱️ <strong>Time's up — wrap up when ready</strong>";
-                box.style.color = "#ef4444";
-                box.style.borderColor = "#ef4444";
+                box.innerHTML = '⏱️ <strong>Time\'s up — wrap up when ready</strong>';
+                box.style.color = '#ef4444';
+                box.style.borderColor = '#ef4444';
             }}
         }}
     }}, 1000);
-}})();
-</script>"""
+}})()"/>"""
 
 
 def _get_fallback_question(role: str, turn_index: int, total_turns: int) -> tuple[str, str | None]:
@@ -753,6 +754,228 @@ def _format_full_transcript_with_model_answers(history: list[dict], model_answer
     return "\n\n".join(md_parts)
 
 
+def _render_per_question_html(questions: list[dict]) -> str:
+    """
+    Convert per-question feedback JSON into a dark-themed HTML accordion string.
+
+    Uses <details>/<summary> for native expand/collapse with no JS required.
+    Inline CSS is scoped to match the existing dark theme (#161b22 background,
+    #4F8EF7 accent) so no changes to theme.css are required.
+    """
+    if not questions:
+        return "<p style='color:#8b949e;font-family:Inter,sans-serif;padding:12px;'>No per-question feedback available.</p>"
+
+    def _score_colour(score: float) -> str:
+        score = float(score) if score else 0
+        if score >= 7.5:
+            return "#2ECC71"  # green
+        if score >= 5.0:
+            return "#F39C12"  # amber
+        return "#E74C3C"      # red
+
+    def _readiness_colour(level: str) -> str:
+        mapping = {"Advanced": "#2ECC71", "Intermediate": "#F39C12", "Beginner": "#E74C3C"}
+        return mapping.get(str(level), "#8b949e")
+
+    def _priority_colour(priority: str) -> str:
+        mapping = {"Low": "#2ECC71", "Medium": "#F39C12", "High": "#E74C3C"}
+        return mapping.get(str(priority), "#8b949e")
+
+    def _star_icon(val: str) -> str:
+        v = str(val).lower()
+        if "present" in v or "yes" in v or v == "true":
+            return "✅"
+        if "partial" in v:
+            return "🔶"
+        return "❌"
+
+    def _pill(text: str, colour: str) -> str:
+        return (
+            f"<span style='background:{colour}22;color:{colour};border:1px solid {colour}55;"
+            f"border-radius:12px;padding:2px 10px;font-size:11px;font-weight:600;"
+            f"font-family:Inter,sans-serif;white-space:nowrap;'>{text}</span>"
+        )
+
+    def _dim_table(dims: dict) -> str:
+        _DIM_META = [
+            ("technical_depth",      "🔬 Technical Depth",       "did_well",        "missing_concepts",  "recommendation"),
+            ("communication_clarity","💬 Communication Clarity", "clarity",         "structure",         "suggestion"),
+            ("confidence_fluency",   "🎤 Confidence & Fluency",  "confidence",      "fluency_pacing",    "recommendation"),
+            ("star_completeness",    "⭐ STAR Completeness",     None,              None,                "suggestion"),
+            ("problem_solving",      "🧩 Problem Solving",       "logical_thinking", "decision_making",  "alternative_approaches"),
+        ]
+        rows = ""
+        for key, label, col_a, col_b, col_c in _DIM_META:
+            d = dims.get(key, {})
+            score = d.get("score", 1)
+            colour = _score_colour(float(score) * 1.0)
+            val_a = d.get(col_a, "") if col_a else ""
+            val_b = d.get(col_b, "") if col_b else ""
+            val_c = d.get(col_c, "")
+            rows += (
+                f"<tr>"
+                f"<td style='padding:8px 10px;font-weight:600;color:#e6edf3;white-space:nowrap;'>{label}</td>"
+                f"<td style='padding:8px 10px;text-align:center;'>"
+                f"<span style='color:{colour};font-weight:700;font-size:15px;'>{score}</span>"
+                f"<span style='color:#8b949e;font-size:11px;'>/10</span></td>"
+                f"<td style='padding:8px 10px;color:#c9d1d9;font-size:12px;'>{val_a}</td>"
+                f"<td style='padding:8px 10px;color:#c9d1d9;font-size:12px;'>{val_b}</td>"
+                f"<td style='padding:8px 10px;color:#79c0ff;font-size:12px;'>{val_c}</td>"
+                f"</tr>"
+            )
+        return (
+            "<div style='overflow-x:auto;margin:12px 0;'>"
+            "<table style='width:100%;border-collapse:collapse;font-family:Inter,sans-serif;font-size:13px;'>"
+            "<thead><tr>"
+            "<th style='padding:8px 10px;text-align:left;background:#21262d;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;'>Dimension</th>"
+            "<th style='padding:8px 10px;text-align:center;background:#21262d;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;'>Score</th>"
+            "<th style='padding:8px 10px;text-align:left;background:#21262d;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;'>Key Positive</th>"
+            "<th style='padding:8px 10px;text-align:left;background:#21262d;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;'>Gap / Observation</th>"
+            "<th style='padding:8px 10px;text-align:left;background:#21262d;color:#8b949e;font-weight:600;border-bottom:1px solid #30363d;'>Recommendation</th>"
+            "</tr></thead>"
+            f"<tbody>{rows}</tbody>"
+            "</table></div>"
+        )
+
+    def _star_table(star_dim: dict) -> str:
+        parts = [
+            ("Situation", star_dim.get("situation", "absent")),
+            ("Task",      star_dim.get("task", "absent")),
+            ("Action",    star_dim.get("action", "absent")),
+            ("Result",    star_dim.get("result", "absent")),
+        ]
+        rows = ""
+        for part_name, val in parts:
+            rows += (
+                f"<tr>"
+                f"<td style='padding:6px 10px;font-weight:600;color:#e6edf3;'>{part_name}</td>"
+                f"<td style='padding:6px 10px;'>{_star_icon(val)}</td>"
+                f"<td style='padding:6px 10px;color:#c9d1d9;font-size:12px;'>{val}</td>"
+                f"</tr>"
+            )
+        missing = star_dim.get("missing_components", "")
+        suggestion = star_dim.get("suggestion", "")
+        return (
+            "<p style='color:#8b949e;font-size:11px;margin:8px 0 4px;font-family:Inter,sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;'>STAR Framework Breakdown</p>"
+            "<div style='overflow-x:auto;'>"
+            "<table style='border-collapse:collapse;font-family:Inter,sans-serif;font-size:13px;'>"
+            f"<tbody>{rows}</tbody></table></div>"
+            + (f"<p style='color:#f0883e;font-size:12px;margin:6px 0;'>⚠️ Missing: {missing}</p>" if missing and missing not in ("N/A", "") else "")
+            + (f"<p style='color:#79c0ff;font-size:12px;margin:4px 0;'>💡 {suggestion}</p>" if suggestion else "")
+        )
+
+    def _bullet_list(items: list, colour: str, icon: str) -> str:
+        if not items:
+            return ""
+        lis = "".join(f"<li style='margin:4px 0;color:{colour};'>{icon} {item}</li>" for item in items)
+        return f"<ul style='margin:6px 0;padding-left:20px;font-family:Inter,sans-serif;font-size:13px;'>{lis}</ul>"
+
+    def _section(title: str, content: str) -> str:
+        return (
+            f"<p style='color:#8b949e;font-size:11px;margin:16px 0 4px;font-family:Inter,sans-serif;"
+            f"font-weight:600;text-transform:uppercase;letter-spacing:0.5px;'>{title}</p>"
+            f"{content}"
+        )
+
+    cards_html = ""
+    for q in questions:
+        q_num = q.get("question_number", "?")
+        q_text = q.get("question", "")[:300]
+        ans_summary = q.get("candidate_answer_summary", "")
+        overall = q.get("overall_score", 1)
+        difficulty = q.get("difficulty_level", "Medium")
+        time_hint = q.get("time_taken_hint", "")
+        readiness = q.get("readiness_level", "Beginner")
+        priority = q.get("priority_for_improvement", "High")
+        impact = q.get("estimated_impact", "")
+        dims = q.get("dimensions", {})
+        strengths = q.get("strengths", [])
+        weaknesses = q.get("weaknesses", [])
+        expected = q.get("interviewer_expected", "")
+        how_to_improve = q.get("how_to_improve", "")
+        strong_example = q.get("strong_answer_example", "")
+        practice_tips = q.get("practice_tips", [])
+
+        oc = _score_colour(overall)
+        diff_colours = {"Easy": "#2ECC71", "Medium": "#F39C12", "Hard": "#E74C3C"}
+        diff_c = diff_colours.get(str(difficulty), "#8b949e")
+
+        card_body = (
+            # Question + Answer summary
+            f"<p style='color:#8b949e;font-size:11px;margin:0 0 4px;font-family:Inter,sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;'>QUESTION</p>"
+            f"<p style='color:#e6edf3;font-size:13px;margin:0 0 10px;font-family:Inter,sans-serif;line-height:1.5;'>{q_text}</p>"
+            f"<p style='color:#8b949e;font-size:11px;margin:0 0 4px;font-family:Inter,sans-serif;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;'>CANDIDATE ANSWER SUMMARY</p>"
+            f"<p style='color:#c9d1d9;font-size:13px;margin:0 0 12px;font-family:Inter,sans-serif;line-height:1.5;"
+            f"background:#21262d;border-left:3px solid #4F8EF7;padding:8px 12px;border-radius:0 4px 4px 0;'>{ans_summary}</p>"
+
+            # Dimension scorecard table
+            + _section("5-Dimension Scorecard", _dim_table(dims))
+
+            # STAR breakdown
+            + _section("", _star_table(dims.get("star_completeness", {})))
+
+            # Strengths
+            + _section("✅ Strengths", _bullet_list(strengths, "#2ECC71", "✦"))
+
+            # Weaknesses
+            + _section("⚠️ Weaknesses", _bullet_list(weaknesses, "#f0883e", "✦"))
+
+            # What interviewer expected
+            + _section("🎯 What the Interviewer Expected",
+                f"<p style='color:#c9d1d9;font-size:13px;margin:4px 0;font-family:Inter,sans-serif;line-height:1.5;'>{expected}</p>")
+
+            # How to improve
+            + _section("📈 How to Improve",
+                f"<p style='color:#79c0ff;font-size:13px;margin:4px 0;font-family:Inter,sans-serif;line-height:1.5;'>{how_to_improve}</p>")
+
+            # Strong answer example (collapsed by default)
+            + _section("💡 Example of a Strong Answer",
+                f"<details style='margin:4px 0;'>"
+                f"<summary style='cursor:pointer;color:#4F8EF7;font-size:13px;font-family:Inter,sans-serif;padding:4px 0;'>Click to expand example answer</summary>"
+                f"<p style='color:#c9d1d9;font-size:13px;margin:8px 0;font-family:Inter,sans-serif;line-height:1.6;"
+                f"background:#21262d;padding:10px 14px;border-radius:6px;border:1px solid #30363d;'>{strong_example}</p>"
+                f"</details>")
+
+            # Practice tips
+            + _section("🏋️ Practice Tips", _bullet_list(practice_tips, "#c9d1d9", "→"))
+
+            # Footer impact pill
+            + f"<div style='margin-top:14px;padding-top:10px;border-top:1px solid #30363d;'>"
+            + f"<span style='color:#8b949e;font-size:12px;font-family:Inter,sans-serif;'>Estimated Impact: </span>"
+            + f"<span style='color:#c9d1d9;font-size:12px;font-family:Inter,sans-serif;'>{impact}</span>"
+            + "</div>"
+        )
+
+        summary_line = (
+            f"<div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>"
+            f"<span style='font-weight:700;font-size:14px;color:#e6edf3;font-family:Inter,sans-serif;'>Question {q_num}</span>"
+            f"{_pill(f'Score: {overall}/10', oc)}"
+            f"{_pill(difficulty, diff_c)}"
+            f"{_pill(readiness, _readiness_colour(readiness))}"
+            f"{_pill(f'Priority: {priority}', _priority_colour(priority))}"
+            + (f"{_pill(time_hint, '#8b949e')}" if time_hint and time_hint != 'N/A' else "")
+            + "</div>"
+        )
+
+        cards_html += (
+            f"<details style='margin:0 0 12px;background:#161b22;border:1px solid #30363d;"
+            f"border-radius:8px;overflow:hidden;'>"
+            f"<summary style='padding:14px 18px;cursor:pointer;list-style:none;user-select:none;"
+            f"background:#1c2128;border-bottom:1px solid #30363d;'>"
+            f"{summary_line}"
+            f"</summary>"
+            f"<div style='padding:16px 18px;'>{card_body}</div>"
+            f"</details>"
+        )
+
+    return (
+        "<div style='font-family:Inter,sans-serif;'>"
+        "<style>details[open]>summary{background:#21262d!important;}details summary::-webkit-details-marker{display:none;}</style>"
+        + cards_html
+        + "</div>"
+    )
+
+
 def generate_final_report(state: dict) -> tuple:
     """Score the session with Gemma 4, generate model answers, and build the PDF report."""
     if state is None:
@@ -823,7 +1046,17 @@ def generate_final_report(state: dict) -> tuple:
     else:
         ats_report_update = gr.update(value="", visible=False)
 
-    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report"), ats_report_update, transcript_md
+    # Per-question detailed feedback
+    per_question_feedback = generate_per_question_feedback(
+        state["history"],
+        state["role"],
+        resume_context=state.get("resume_context"),
+        jd_context=state.get("jd_context"),
+    )
+    state["per_question_feedback"] = per_question_feedback
+    per_question_html = _render_per_question_html(per_question_feedback)
+
+    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report"), ats_report_update, transcript_md, per_question_html
 
 
 def _create_report_charts(scorecard: dict):
@@ -1225,6 +1458,13 @@ def build_ui() -> gr.Blocks:
                     with gr.Group(elem_classes=["chart-card"]):
                         bar_plot = gr.Plot(label="📊 Dimension Scores")
 
+                with gr.Accordion("🔍 Per-Question Detailed Feedback", open=True, elem_classes=["transcript-accordion"]):
+                    per_question_html_box = gr.HTML(
+                        "<p style='color:#8b949e;font-family:Inter,sans-serif;padding:12px;'>"
+                        "Detailed per-question analysis will appear here after completing your session."
+                        "</p>"
+                    )
+
                 with gr.Accordion("📃 Full Transcript", open=False, elem_classes=["transcript-accordion"]):
                     transcript_full = gr.Markdown("*Transcript will appear here.*")
 
@@ -1319,31 +1559,37 @@ def build_ui() -> gr.Blocks:
                     gr.update(value="", visible=False),
                     gr.update(visible=False),
                 )
-            resume_ctx, jd_ctx, detected_role, status_notice, mode = detect_unified_context_and_role(
-                file_path, jd_text, ROLES
-            )
-            selected_role = detected_role if detected_role else current_role
+            try:
+                resume_ctx, jd_ctx, detected_role, status_notice, mode = detect_unified_context_and_role(
+                    file_path, jd_text, ROLES
+                )
+                selected_role = detected_role if detected_role else current_role
 
-            ats_info = {}
-            if file_path:
-                try:
-                    ats_info = calculate_ats_score(file_path, selected_role, jd_custom_input=jd_text)
-                except Exception as exc:
-                    logger.warning("ATS scoring failed: %s", exc)
-                    ats_info = {"score": None, "formatted_md": "⚠️ ATS scoring unavailable for this file"}
+                ats_info = {}
+                if file_path:
+                    try:
+                        ats_info = calculate_ats_score(file_path, selected_role, jd_custom_input=jd_text)
+                    except Exception as exc:
+                        logger.warning("ATS scoring failed: %s", exc)
+                        ats_info = {"score": None, "formatted_md": "⚠️ ATS scoring unavailable for this file"}
 
-            status_update = gr.update(value=status_notice, visible=bool(status_notice))
-            mismatch_update = gr.update(value="", visible=False)
-            mismatch_btn_update = gr.update(visible=False)
+                status_update = gr.update(value=status_notice, visible=bool(status_notice))
+                mismatch_update = gr.update(value="", visible=False)
+                mismatch_btn_update = gr.update(visible=False)
 
-            if ats_info.get("formatted_md"):
-                ats_md_update = gr.update(value=ats_info["formatted_md"], visible=True)
-                ats_acc_update = gr.update(visible=True)
-            else:
-                ats_md_update = gr.update(value="", visible=False)
-                ats_acc_update = gr.update(visible=False)
+                if ats_info.get("formatted_md"):
+                    ats_md_update = gr.update(value=ats_info["formatted_md"], visible=True)
+                    ats_acc_update = gr.update(visible=True)
+                else:
+                    ats_md_update = gr.update(value="", visible=False)
+                    ats_acc_update = gr.update(visible=False)
 
-            return selected_role, status_update, detected_role, mismatch_update, mismatch_btn_update, ats_md_update, ats_acc_update
+                return selected_role, status_update, detected_role, mismatch_update, mismatch_btn_update, ats_md_update, ats_acc_update
+
+            except Exception as exc:
+                logger.error("Error processing JD/Resume inputs change: %s", exc, exc_info=True)
+                notice = f"⚠️ Could not parse input text ({exc})"
+                return current_role, gr.update(value=notice, visible=True), None, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
         resume_file.change(
             fn=_on_inputs_change,
@@ -1406,6 +1652,7 @@ def build_ui() -> gr.Blocks:
                     question,
                     audio_out,
                     turn_lbl,
+                    gr.skip(),
                     finish_visible,
                     submit_visible,
                     skip_visible,
@@ -1421,10 +1668,11 @@ def build_ui() -> gr.Blocks:
                     ),
                     gr.skip(),
                     gr.skip(),
+                    gr.skip(),
                 )
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md, per_question_html = generate_final_report(st)
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
                 return (
                     st,
@@ -1434,6 +1682,7 @@ def build_ui() -> gr.Blocks:
                     question,
                     audio_out,
                     turn_lbl,
+                    gr.update(visible=False),
                     finish_visible,
                     submit_visible,
                     skip_visible,
@@ -1446,8 +1695,10 @@ def build_ui() -> gr.Blocks:
                     gr.update(value="", visible=False),
                     tab_update,
                     ats_report_update,
+                    per_question_html,
                 )
 
+            timer_update = _build_timer_html(st.get("timer_seconds", 90))
             return (
                 st,
                 transcript,
@@ -1456,6 +1707,7 @@ def build_ui() -> gr.Blocks:
                 question,
                 audio_out,
                 turn_lbl,
+                timer_update,
                 finish_visible,
                 submit_visible,
                 skip_visible,
@@ -1466,6 +1718,7 @@ def build_ui() -> gr.Blocks:
                 gr.skip(),
                 gr.skip(),
                 gr.update(value="", visible=False),
+                gr.skip(),
                 gr.skip(),
                 gr.skip(),
             )
@@ -1481,6 +1734,7 @@ def build_ui() -> gr.Blocks:
                 question_text,
                 question_audio,
                 turn_counter,
+                question_timer_box,
                 finish_btn,
                 submit_btn,
                 skip_btn,
@@ -1493,6 +1747,7 @@ def build_ui() -> gr.Blocks:
                 submit_error_box,
                 tabs,
                 ats_report_box,
+                per_question_html_box,
             ],
         )
 
@@ -1504,11 +1759,12 @@ def build_ui() -> gr.Blocks:
             skip_visible = gr.update(visible=not finished)
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md, per_question_html = generate_final_report(st)
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-                return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
+                return st, "[skipped]", question, audio_out, turn_lbl, gr.update(visible=False), finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update, per_question_html
 
-            return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.update(value="", visible=False), gr.skip(), gr.skip()
+            timer_update = _build_timer_html(st.get("timer_seconds", 90))
+            return st, "[skipped]", question, audio_out, turn_lbl, timer_update, finish_visible, submit_visible, skip_visible, gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.update(value="", visible=False), gr.skip(), gr.skip(), gr.skip()
 
         skip_btn.click(
             fn=_on_skip,
@@ -1519,6 +1775,7 @@ def build_ui() -> gr.Blocks:
                 question_text,
                 question_audio,
                 turn_counter,
+                question_timer_box,
                 finish_btn,
                 submit_btn,
                 skip_btn,
@@ -1530,19 +1787,20 @@ def build_ui() -> gr.Blocks:
                 submit_error_box,
                 tabs,
                 ats_report_box,
+                per_question_html_box,
             ],
         )
 
         # Finish & generate report
         def _on_finish(st):
-            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
+            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md, per_question_html = generate_final_report(st)
             pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
-            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
+            return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update, per_question_html
 
         finish_btn.click(
             fn=_on_finish,
             inputs=[state],
-            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, submit_error_box, tabs, ats_report_box],
+            outputs=[state, scorecard_md, radar_plot, bar_plot, transcript_full, pdf_download, submit_error_box, tabs, ats_report_box, per_question_html_box],
         )
 
         # New session → reset to Setup tab

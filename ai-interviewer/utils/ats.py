@@ -77,17 +77,27 @@ def calculate_ats_score(
     file_path_str = None
 
     if isinstance(resume_file_or_text, (str, Path)):
-        p = Path(str(resume_file_or_text))
-        if p.exists() and p.is_file():
-            file_path_str = str(p)
-            resume_text = extract_text_from_file(p)
+        s_val = str(resume_file_or_text)
+        if len(s_val) > 250 or "\n" in s_val:
+            resume_text = s_val.strip()
         else:
-            resume_text = str(resume_file_or_text)
+            try:
+                p = Path(s_val)
+                if p.exists() and p.is_file():
+                    file_path_str = str(p)
+                    resume_text = extract_text_from_file(p)
+                else:
+                    resume_text = s_val.strip()
+            except OSError:
+                resume_text = s_val.strip()
     elif hasattr(resume_file_or_text, "name"):
-        p = Path(str(resume_file_or_text.name))
-        if p.exists() and p.is_file():
-            file_path_str = str(p)
-            resume_text = extract_text_from_file(p)
+        try:
+            p = Path(str(resume_file_or_text.name))
+            if p.exists() and p.is_file():
+                file_path_str = str(p)
+                resume_text = extract_text_from_file(p)
+        except OSError:
+            pass
 
     if not resume_text and not file_path_str:
         resume_text = extract_text_from_file(resume_file_or_text)

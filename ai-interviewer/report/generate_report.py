@@ -94,6 +94,7 @@ def generate_report(
     overall_score = scorecard.get("overall_score")
     dimensions = scorecard.get("dimensions") or []
     summary = scorecard.get("summary", "")
+    per_question_feedback = session.get("per_question_feedback") or []
 
     out_path = out_dir / f"report_{session_id[:8]}.pdf"
     doc = SimpleDocTemplate(
@@ -118,6 +119,10 @@ def generate_report(
         story.append(Paragraph("Scorecard unavailable for this session.", styles["Normal"]))
         story.append(Spacer(1, 0.5 * cm))
 
+    # ── Section 3: Per-question feedback ───────────────────────────────────
+    if per_question_feedback:
+        story.extend(_build_per_question_section(styles, per_question_feedback))
+
     # ── ATS Analysis Section ──────────────────────────────────────────────────
     ats_info = session.get("ats_info")
     if ats_info and ats_info.get("score") is not None:
@@ -127,7 +132,7 @@ def generate_report(
     if resume_improvements:
         story.extend(_build_resume_improvements_section(styles, resume_improvements))
 
-    # ── Section 3: Full transcript ────────────────────────────────────────────
+    # ── Section 4: Full transcript ────────────────────────────────────────────
     model_answers = session.get("model_answers")
     if turns:
         story.extend(_build_transcript(styles, turns, model_answers=model_answers))
@@ -334,3 +339,112 @@ def _build_summary(styles: Any, summary: str) -> list:
         Paragraph(summary, styles["Normal"]),
         Spacer(1, 0.5 * cm),
     ]
+
+
+def _build_per_question_section(styles: Any, questions: list[dict]) -> list:
+    """
+    Build a PDF section with per-question detailed feedback.
+
+    Each question gets:
+    - A heading with question number, overall score, difficulty, and readiness level.
+    - A 5-row dimension score table.
+    - Strengths, weaknesses, how-to-improve, and practice tips.
+    """
+    heading_style = ParagraphStyle(
+        "PQHead", parent=styles["Heading2"], textColor=_BRAND_DARK, spaceAfter=6
+    )
+    q_head_style = ParagraphStyle(
+        "PQQHead", parent=styles["Heading3"], textColor=_BRAND_ACCENT, spaceAfter=4
+    )
+    norm_style = styles["Normal"]
+    bullet_style = ParagraphStyle(
+        "PQBullet", parent=styles["Normal"], leftIndent=0.5 * cm, spaceAfter=3, fontSize=9
+    )
+    label_style = ParagraphStyle(
+        "PQLabel", parent=styles["Normal"], fontName="Helvetica-Bold", fontSize=9, spaceAfter=2
+    )
+
+    _DIM_DISPLAY = [
+        ("technical_depth",       "Technical Depth"),
+        ("communication_clarity", "Communication Clarity"),
+        ("confidence_fluency",    "Confidence & Fluency"),
+        ("star_completeness",     "STAR Completeness"),
+        ("problem_solving",       "Problem Solving"),
+    ]
+
+    elements: list = [Paragraph("Per-Question Detailed Feedback", heading_style)]
+
+    for q in questions:
+        q_num = q.get("question_number", "?")
+        overall = q.get("overall_score", 1)
+        difficulty = q.get("difficulty_level", "Medium")
+        readiness = q.get("readiness_level", "Beginner")
+        priority = q.get("priority_for_improvement", "High")
+        q_text = (q.get("question") or "")[:200]
+        ans_summary = q.get("candidate_answer_summary", "")
+        dims = q.get("dimensions", {})
+        strengths = q.get("strengths", [])
+        weaknesses = q.get("weaknesses", [])
+        how_to_improve = q.get("how_to_improve", "")
+        practice_tips = q.get("practice_tips", [])
+        impact = q.get("estimated_impact", "")
+
+        header_text = (
+            f"Q{q_num} | Score: {overall}/10 | {difficulty} | {readiness} | Priority: {priority}"
+        )
+        elements.append(Paragraph(header_text, q_head_style))
+        elements.append(Paragraph(f"<b>Question:</b> {q_text}", norm_style))
+        elements.append(Spacer(1, 0.15 * cm))
+        elements.append(Paragraph(f"<b>Candidate Answer:</b> {ans_summary}", norm_style))
+        elements.append(Spacer(1, 0.2 * cm))
+
+        # Dimension score mini-table
+        dim_header = ["Dimension", "Score", "Key Recommendation"]
+        dim_data = [dim_header]
+        dim_row_colours = []
+        for i, (key, label) in enumerate(_DIM_DISPLAY, start=1):
+            d = dims.get(key, {})
+            score = d.get("score", 1)
+            rec = d.get("recommendation") or d.get("suggestion") or d.get("alternative_approaches", "")
+            dim_data.append([label, str(score), Paragraph(rec[:120], norm_style) if rec else ""])
+            # Colour score on 1-10 scale (map to 5-pt colours: ≥8→green, ≥5→amber, <5→red)
+            colour = _score_colour(round(score / 2) if score else 1)
+            dim_row_colours.append(("BACKGROUND", (1, i), (1, i), colour))
+
+        dim_table = Table(dim_data, colWidths=[4 * cm, 1.5 * cm, 11.5 * cm])
+        dim_ts = TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _BRAND_ACCENT),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("FONTSIZE", (0, 1), (-1, -1), 8),
+            *dim_row_colours,
+        ])
+        dim_table.setStyle(dim_ts)
+        elements.append(dim_table)
+        elements.append(Spacer(1, 0.2 * cm))
+
+        if strengths:
+            elements.append(Paragraph("Strengths:", label_style))
+            for s in strengths:
+                elements.append(Paragraph(f"• {s}", bullet_style))
+        if weaknesses:
+            elements.append(Paragraph("Weaknesses:", label_style))
+            for w in weaknesses:
+                elements.append(Paragraph(f"• {w}", bullet_style))
+        if how_to_improve:
+            elements.append(Paragraph("How to Improve:", label_style))
+            elements.append(Paragraph(how_to_improve[:300], bullet_style))
+        if practice_tips:
+            elements.append(Paragraph("Practice Tips:", label_style))
+            for tip in practice_tips:
+                elements.append(Paragraph(f"• {tip}", bullet_style))
+        if impact:
+            elements.append(Paragraph(f"Estimated Impact: {impact}", bullet_style))
+
+        elements.append(Spacer(1, 0.5 * cm))
+
+    return elements

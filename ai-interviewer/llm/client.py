@@ -35,6 +35,7 @@ from llm.prompts import (
     SCORING_JSON_SCHEMA,
     build_coach_chat_prompt,
     build_model_answers_prompt,
+    build_per_question_feedback_prompt,
     build_resume_improvement_prompt,
     build_scoring_prompt,
     build_system_prompt,
@@ -474,4 +475,105 @@ def generate_resume_improvements(
         fallbacks.append(f"Incorporate missing target keywords ({missing_str}) into technical bullet points.")
     fallbacks.append("Add quantifiable impact metrics (e.g., latency reduced by X%, throughput increased) to project bullets.")
     fallbacks.append("Explicitly highlight system architecture trade-offs and error handling strategies in technical role sections.")
+    return fallbacks
+
+
+def generate_per_question_feedback(
+    history: list[dict],
+    role: str,
+    resume_context: str | None = None,
+    jd_context: str | None = None,
+) -> list[dict]:
+    """
+    Generate per-question detailed feedback for every interviewer question in history.
+
+    Returns a list of dicts matching PER_QUESTION_JSON_SCHEMA["questions"].
+    Each dict contains scores (1-10), STAR breakdown, strengths/weaknesses,
+    a strong answer example, practice tips, readiness level, and priority.
+
+    Falls back to placeholder structs gracefully if the LLM returns invalid JSON.
+    """
+    if not history:
+        return []
+
+    interviewer_turns = [t for t in history if t.get("speaker") == "interviewer"]
+    if not interviewer_turns:
+        return []
+
+    system_prompt = build_per_question_feedback_prompt(
+        history, role, resume_context=resume_context, jd_context=jd_context
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Generate per-question feedback now."},
+    ]
+
+    try:
+        raw_res = _chat(messages, temperature=0.2, num_predict=3072).strip()
+        match = re.search(r"\{.*\}", raw_res, re.DOTALL)
+        json_str = match.group(0) if match else raw_res
+        parsed = json.loads(json_str)
+        questions = parsed.get("questions", [])
+        if isinstance(questions, list) and len(questions) > 0:
+            logger.info("generate_per_question_feedback: got %d question feedbacks.", len(questions))
+            return questions
+    except Exception as exc:
+        logger.warning("generate_per_question_feedback failed (%s); building fallback structs", exc)
+
+    # Graceful fallback — placeholder per-question dicts so the UI always renders
+    fallbacks = []
+    _empty_dim = {
+        "score": 1,
+        "did_well": "Unable to generate feedback.",
+        "missing_concepts": "N/A",
+        "knowledge_gaps": "N/A",
+        "recommendation": "Please review your answer and consult study resources.",
+    }
+    for idx, turn in enumerate(interviewer_turns, start=1):
+        q_text = turn.get("content", "Question")
+        fallbacks.append({
+            "question_number": idx,
+            "question": q_text,
+            "candidate_answer_summary": "Feedback generation unavailable for this question.",
+            "overall_score": 1.0,
+            "difficulty_level": "Medium",
+            "time_taken_hint": "N/A",
+            "dimensions": {
+                "technical_depth": _empty_dim.copy(),
+                "communication_clarity": {
+                    "score": 1,
+                    "clarity": "N/A", "structure": "N/A",
+                    "grammar_vocabulary": "N/A",
+                    "suggestion": "Please review your answer.",
+                },
+                "confidence_fluency": {
+                    "score": 1,
+                    "confidence": "N/A", "fluency_pacing": "N/A",
+                    "filler_words": "N/A",
+                    "recommendation": "Practice answer delivery.",
+                },
+                "star_completeness": {
+                    "score": 1,
+                    "situation": "absent", "task": "absent",
+                    "action": "absent", "result": "absent",
+                    "missing_components": "All STAR components missing.",
+                    "suggestion": "Structure your answer using the STAR framework.",
+                },
+                "problem_solving": {
+                    "score": 1,
+                    "logical_thinking": "N/A", "decision_making": "N/A",
+                    "solution_quality": "N/A",
+                    "alternative_approaches": "Review common approaches for this topic.",
+                },
+            },
+            "strengths": ["Answer was attempted."],
+            "weaknesses": ["Feedback generation failed; please retry."],
+            "interviewer_expected": "A comprehensive answer covering key concepts, practical examples, and trade-offs.",
+            "how_to_improve": "Study the core concepts for this question topic and practice structured answers.",
+            "strong_answer_example": "N/A — feedback generation unavailable.",
+            "practice_tips": ["Review study materials for this topic.", "Practice answering aloud with a timer."],
+            "readiness_level": "Beginner",
+            "priority_for_improvement": "High",
+            "estimated_impact": "Significant improvement possible with targeted study.",
+        })
     return fallbacks

@@ -35,10 +35,16 @@ def extract_text_from_file(file_path: str | Path | dict | Any) -> str:
         logger.warning("Empty or invalid file_path provided for resume extraction.")
         return ""
 
-    path = Path(real_path_str)
-    if not path.exists():
-        logger.warning("Resume file does not exist at path: %s", path)
-        return ""
+    if len(real_path_str) > 250 or "\n" in real_path_str:
+        return real_path_str.strip()
+
+    try:
+        path = Path(real_path_str)
+        if not path.exists():
+            logger.warning("Resume file does not exist at path: %s", path)
+            return ""
+    except OSError:
+        return real_path_str.strip()
 
     ext = path.suffix.lower()
     if ext == ".pdf":
@@ -70,7 +76,7 @@ def extract_text_from_file(file_path: str | Path | dict | Any) -> str:
         try:
             import pdfplumber
             with pdfplumber.open(str(path)) as pdf:
-                text_parts = [p.extract_text() or "" for p in pdf.pages]
+                text_parts = [page.extract_text() or "" for page in pdf.pages]
                 full_text = "\n".join(text_parts).strip()
                 if full_text:
                     logger.info("Extracted %d characters from PDF resume via pdfplumber: %s", len(full_text), path.name)
@@ -78,19 +84,10 @@ def extract_text_from_file(file_path: str | Path | dict | Any) -> str:
         except Exception as exc:
             logger.warning("Failed PDF extraction via pdfplumber: %s", exc)
 
-        logger.warning("All PDF extraction libraries failed for %s", path.name)
-        return ""
-
-    elif ext in (".txt", ".md"):
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read().strip()
-        except Exception as exc:
-            logger.warning("Failed to read text resume file: %s", exc, exc_info=True)
-            print(f"[RESUME PARSING ERROR] Failed to read text file: {exc}")
-            return ""
-    else:
-        logger.warning("Unsupported resume file extension: %s", ext)
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception as exc:
+        logger.warning("Failed to read text file %s: %s", path, exc)
         return ""
 
 
@@ -182,10 +179,19 @@ def detect_resume_role_and_highlights(
 def extract_text_from_file_or_string(input_val: Any) -> str:
     """
     Extract text whether input_val is a file path, Gradio File object, or plain string text.
+    Safely handles long text strings (e.g. pasted Job Descriptions) without throwing OSError.
     """
     if not input_val:
         return ""
-    if isinstance(input_val, str) and not (Path(input_val).exists() and Path(input_val).is_file()):
+    if isinstance(input_val, str):
+        if "\n" in input_val or len(input_val) > 250:
+            return input_val.strip()
+        try:
+            p = Path(input_val)
+            if p.exists() and p.is_file():
+                return extract_text_from_file(p)
+        except OSError:
+            pass
         return input_val.strip()
     return extract_text_from_file(input_val)
 

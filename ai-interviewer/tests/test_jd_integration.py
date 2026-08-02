@@ -24,6 +24,14 @@ def test_extract_jd_highlights(mock_chat):
     assert "DevOps / SRE" in notice
 
 
+@patch("utils.resume._chat", return_value='{"highlights": "Complex Securities, Valuation", "role": "Backend Engineer"}')
+def test_extract_jd_highlights_long_text(mock_chat):
+    long_jd = "As a Senior Consultant on the Complex Securities team, you will help clients—from medium-sized businesses to large multinational corporations—solve complex business and transaction issues. You will work with leading valuation specialists to provide financial modeling and valuation analyses for complex equity and debt securities related to regulatory, financial reporting, and tax matters." * 2
+    assert len(long_jd) > 255
+    jd_ctx, detected_role, notice = extract_jd_highlights(long_jd, ["Backend Engineer"])
+    assert jd_ctx != ""
+
+
 @patch("utils.resume._chat", return_value='{"highlights": "FastAPI, Docker", "role": "DevOps / SRE"}')
 def test_detect_unified_context_and_role_both(mock_chat, tmp_path):
     resume_file = tmp_path / "resume.txt"

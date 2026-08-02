@@ -110,6 +110,68 @@ REQUIRED_DIMENSIONS = [
     "problem_solving",
 ]
 
+# Per-question JSON schema for detailed, per-question feedback generation
+PER_QUESTION_JSON_SCHEMA = {
+    "questions": [
+        {
+            "question_number": "<int>",
+            "question": "<exact interviewer question text>",
+            "candidate_answer_summary": "<1-2 sentence summary of candidate's actual answer>",
+            "overall_score": "<float 1-10, average of 5 dimension scores scaled to 10>",
+            "difficulty_level": "Easy | Medium | Hard",
+            "time_taken_hint": "<estimated e.g. ~30s, ~60s, ~90s>",
+            "dimensions": {
+                "technical_depth": {
+                    "score": "<int 1-10>",
+                    "did_well": "<what candidate did well technically>",
+                    "missing_concepts": "<key technical concepts omitted>",
+                    "knowledge_gaps": "<specific knowledge gaps identified>",
+                    "recommendation": "<specific actionable recommendation>"
+                },
+                "communication_clarity": {
+                    "score": "<int 1-10>",
+                    "clarity": "<assessment of clarity>",
+                    "structure": "<assessment of structure>",
+                    "grammar_vocabulary": "<assessment of language use>",
+                    "suggestion": "<how to communicate this answer better>"
+                },
+                "confidence_fluency": {
+                    "score": "<int 1-10>",
+                    "confidence": "<assessment of speaking confidence>",
+                    "fluency_pacing": "<assessment of fluency>",
+                    "filler_words": "<observed filler words or hesitations>",
+                    "recommendation": "<how to improve confidence>"
+                },
+                "star_completeness": {
+                    "score": "<int 1-10>",
+                    "situation": "<present/absent/partial + brief note>",
+                    "task": "<present/absent/partial + brief note>",
+                    "action": "<present/absent/partial + brief note>",
+                    "result": "<present/absent/partial + brief note>",
+                    "missing_components": "<list of missing STAR parts>",
+                    "suggestion": "<how to restructure using STAR>"
+                },
+                "problem_solving": {
+                    "score": "<int 1-10>",
+                    "logical_thinking": "<assessment of logic>",
+                    "decision_making": "<assessment of decision quality>",
+                    "solution_quality": "<assessment of solution>",
+                    "alternative_approaches": "<approaches candidate missed>"
+                }
+            },
+            "strengths": ["<strength 1>", "<strength 2>"],
+            "weaknesses": ["<weakness 1>", "<weakness 2>"],
+            "interviewer_expected": "<what a top candidate would have covered>",
+            "how_to_improve": "<practical, actionable advice for next time>",
+            "strong_answer_example": "<concise example of a strong answer to this specific question>",
+            "practice_tips": ["<tip 1>", "<tip 2>"],
+            "readiness_level": "Beginner | Intermediate | Advanced",
+            "priority_for_improvement": "Low | Medium | High",
+            "estimated_impact": "<e.g. 'Improving this area could add ~1.5 points to overall score'>"
+        }
+    ]
+}
+
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
@@ -385,3 +447,66 @@ def format_history_for_prompt(history: list[dict]) -> str:
         speaker_label = "Interviewer" if turn["speaker"] == "interviewer" else "Candidate"
         lines.append(f"{speaker_label}: {turn['content']}")
     return "\n".join(lines)
+
+
+def build_per_question_feedback_prompt(
+    history: list[dict],
+    role: str,
+    resume_context: str | None = None,
+    jd_context: str | None = None,
+) -> str:
+    """
+    Return the system prompt for generating per-question detailed feedback.
+
+    The user message for this call should be a simple trigger like
+    "Generate per-question feedback now."
+
+    The LLM is instructed to score each interviewer question individually
+    across all 5 rubric dimensions (scored 1-10) and provide rich coaching
+    metadata: STAR breakdown, strengths, weaknesses, example strong answer,
+    practice tips, readiness level, and improvement priority.
+    """
+    import json  # noqa: PLC0415
+
+    transcript = format_history_for_prompt(history)
+    schema_str = json.dumps(PER_QUESTION_JSON_SCHEMA, indent=2)
+
+    ctx = ""
+    if resume_context and resume_context.strip():
+        ctx += f"\nResume Context (first 400 chars): {resume_context[:400]}"
+    if jd_context and jd_context.strip():
+        ctx += f"\nJob Description Context (first 400 chars): {jd_context[:400]}"
+
+    return f"""SYSTEM PROMPT — Per-Question Detailed Interview Feedback Generator
+
+ROLE
+You are an experienced Technical Interviewer, Hiring Manager, and Career Coach for {role} roles.{ctx}
+
+Your task is to analyze each interview question individually from the transcript below and provide
+detailed, actionable, coaching-focused feedback.
+
+EVALUATION RUBRIC (score each dimension 1-10 per question):
+  • technical_depth       — correctness, depth, domain accuracy, key concepts covered
+  • communication_clarity — structure, conciseness, clarity of explanation
+  • confidence_fluency    — delivery, decisiveness, fluency, filler word avoidance
+  • star_completeness     — presence of Situation / Task / Action / Result structure
+  • problem_solving       — logical reasoning, edge case handling, solution quality
+
+TRANSCRIPT
+{transcript}
+
+INSTRUCTIONS
+1. Analyze EVERY question asked by the Interviewer in the transcript above.
+2. For each question, evaluate the immediately following Candidate response.
+3. If the candidate skipped a question (answer is '[skipped]' or empty), assign score 1 to all dimensions and note the skip in candidate_answer_summary.
+4. overall_score = average of the 5 dimension scores (already on 1-10 scale).
+5. difficulty_level: infer from the question complexity (Easy/Medium/Hard).
+6. time_taken_hint: estimate from answer length (e.g., '~30s' for very short, '~90s' for detailed).
+7. strong_answer_example: write a concise 3-5 sentence example of a high-scoring answer to this specific question.
+8. Tailor all recommendations specifically to what the candidate actually said — avoid generic advice.
+
+OUTPUT FORMAT
+Return ONLY valid JSON matching this schema exactly — no prose, no code fences, no explanation:
+
+{schema_str}"""
+
