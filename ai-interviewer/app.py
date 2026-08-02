@@ -872,14 +872,45 @@ _THEME = gr.themes.Base(
 )
 
 
+_TOGGLE_JS = """
+() => {
+    const isLight = document.body.classList.toggle('light-mode');
+    try { localStorage.setItem('app-theme', isLight ? 'light' : 'dark'); } catch(e) {}
+    return isLight ? '🌙 Dark Mode' : '☀️ Light Mode';
+}
+"""
+
+_INIT_THEME_JS = """
+() => {
+    try {
+        if (localStorage.getItem('app-theme') === 'light') {
+            document.body.classList.add('light-mode');
+            const btn = document.querySelector('.theme-toggle-btn button') || document.querySelector('.theme-toggle-btn');
+            if (btn) btn.innerText = '🌙 Dark Mode';
+        }
+    } catch(e) {}
+}
+"""
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Privacy-First AI Interviewer", theme=_THEME, css=_CSS) as demo:
 
-        # ── Persistent offline badge ──────────────────────────────────────────
-        gr.Markdown(
-            '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
-        )
+        # ── Header bar with offline badge & theme toggle ───────────────────────
+        with gr.Row(elem_classes=["header-bar"]):
+            gr.Markdown(
+                '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
+            )
+            theme_toggle_btn = gr.Button("☀️ Light Mode", size="sm", elem_classes=["theme-toggle-btn"])
+
         gr.Markdown("# 🎙️ Privacy-First AI Interviewer", elem_classes=["app-title"])
+
+        theme_toggle_btn.click(
+            fn=None,
+            js=_TOGGLE_JS,
+            outputs=[theme_toggle_btn],
+        )
+        demo.load(fn=None, js=_INIT_THEME_JS)
 
         # ── Session state ─────────────────────────────────────────────────────
         state = gr.State(None)
