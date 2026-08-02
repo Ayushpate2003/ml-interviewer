@@ -123,9 +123,14 @@ def generate_report(
     if ats_info and ats_info.get("score") is not None:
         story.extend(_build_ats_section(styles, ats_info))
 
+    resume_improvements = session.get("resume_improvements")
+    if resume_improvements:
+        story.extend(_build_resume_improvements_section(styles, resume_improvements))
+
     # ── Section 3: Full transcript ────────────────────────────────────────────
+    model_answers = session.get("model_answers")
     if turns:
-        story.extend(_build_transcript(styles, turns))
+        story.extend(_build_transcript(styles, turns, model_answers=model_answers))
 
     # ── Section 4: Summary & next steps ──────────────────────────────────────
     if summary:
@@ -155,6 +160,23 @@ def _build_ats_section(styles: Any, ats_info: dict) -> list:
         Paragraph(f"<b>Suggestion:</b> {sug_str}", norm_style),
         Spacer(1, 0.5 * cm),
     ]
+
+
+def _build_resume_improvements_section(styles: Any, improvements: list[str]) -> list:
+    if not improvements:
+        return []
+    head_style = ParagraphStyle("ResImpHead", parent=styles["Heading2"], textColor=_BRAND_DARK, spaceAfter=6)
+    bullet_style = ParagraphStyle("ResImpBullet", parent=styles["Normal"], leftIndent=0.5 * cm, spaceAfter=4)
+
+    elements = [
+        Paragraph("📄 Resume Improvement & Rewrite Suggestions", head_style),
+        Paragraph("Synthesized from ATS keyword analysis and live interview technical performance:", styles["Normal"]),
+        Spacer(1, 0.2 * cm),
+    ]
+    for imp in improvements:
+        elements.append(Paragraph(f"• {imp}", bullet_style))
+    elements.append(Spacer(1, 0.5 * cm))
+    return elements
 
 def _build_cover(
     styles: Any,
@@ -234,7 +256,7 @@ def _build_scorecard(styles: Any, dimensions: list[dict]) -> list:
     ]
 
 
-def _build_transcript(styles: Any, turns: list[dict]) -> list:
+def _build_transcript(styles: Any, turns: list[dict], model_answers: list[dict] | None = None) -> list:
     heading = ParagraphStyle(
         "SectionHead",
         parent=styles["Heading2"],
@@ -255,13 +277,45 @@ def _build_transcript(styles: Any, turns: list[dict]) -> list:
         leftIndent=1 * cm,
         spaceAfter=8,
     )
+    model_head_style = ParagraphStyle(
+        "ModelHead",
+        parent=styles["Normal"],
+        leftIndent=0.5 * cm,
+        spaceAfter=2,
+        textColor=_BRAND_ACCENT,
+        fontName="Helvetica-Bold",
+        fontSize=9,
+    )
+    model_bullet_style = ParagraphStyle(
+        "ModelBullet",
+        parent=styles["Normal"],
+        leftIndent=1 * cm,
+        spaceAfter=2,
+        fontSize=9,
+        textColor=colors.HexColor("#374151"),
+    )
 
-    elements = [Paragraph("Full Transcript", heading)]
+    model_map = {}
+    if model_answers:
+        for item in model_answers:
+            t_idx = item.get("turn_index")
+            if t_idx:
+                model_map[t_idx] = item.get("bullets", [])
+
+    elements = [Paragraph("Full Transcript & Model Answers", heading)]
+    interviewer_count = 0
     for turn in turns:
         speaker = turn.get("speaker", "unknown")
         content = turn.get("content", "")
         if speaker == "interviewer":
+            interviewer_count += 1
             elements.append(Paragraph(f"Interviewer: {content}", interviewer_style))
+            bullets = turn.get("model_answer_bullets") or model_map.get(interviewer_count, [])
+            if bullets:
+                elements.append(Paragraph("💡 Model Answer Highlights:", model_head_style))
+                for bullet in bullets:
+                    elements.append(Paragraph(f"• {bullet}", model_bullet_style))
+                elements.append(Spacer(1, 0.2 * cm))
         else:
             elements.append(Paragraph(f"Candidate: {content}", candidate_style))
     elements.append(Spacer(1, 0.8 * cm))

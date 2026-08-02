@@ -32,6 +32,8 @@ htmlcov/
 # Application Data & Reports
 data/*.pdf
 data/*.db*
+ai-interviewer/data/*.pdf
+ai-interviewer/data/*.db*
 
 # Environment variables
 .env

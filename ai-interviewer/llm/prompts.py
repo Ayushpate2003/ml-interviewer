@@ -121,9 +121,10 @@ def build_system_prompt(
     current_turn: int = 1,
     total_turns: int = 5,
     conversation_history: str = "None yet — this is the opening question.",
+    difficulty: str = "Medium",
 ) -> str:
     """
-    Return the system prompt for the Resume/JD-Aware, Time-Calibrated Interview Question Generator.
+    Return the system prompt for the Resume/JD-Aware, Adaptive Difficulty, Time-Calibrated Interview Question Generator.
     """
     has_resume = bool(resume_context and resume_context.strip())
     has_jd = bool(jd_context and jd_context.strip())
@@ -157,6 +158,27 @@ def build_system_prompt(
             f"Ask high-quality, realistic mock interview questions tailored to the {role} role."
         )
 
+    diff_upper = (difficulty or "Medium").capitalize()
+    if diff_upper == "Hard":
+        difficulty_instructions = (
+            "ADAPTIVE QUESTION DIFFICULTY: HARD (Escalated Depth & Tradeoff Probing)\n"
+            "The candidate has demonstrated strong performance in previous turns. Escalate question difficulty:\n"
+            "- Ask about complex failure modes, high-scale bottlenecks, architectural trade-offs, or advanced edge cases.\n"
+            "- Challenge the candidate to justify design choices with technical rigor."
+        )
+    elif diff_upper == "Easy":
+        difficulty_instructions = (
+            "ADAPTIVE QUESTION DIFFICULTY: EASY (Core Fundamentals & Calibrated Focus)\n"
+            "The candidate gave a vague or hesitant response on previous turns. Calibrate difficulty to core fundamentals:\n"
+            "- Ask a clear, direct, foundational question focusing on core concepts rather than advanced edge cases.\n"
+            "- Help the candidate establish a solid baseline without overloading them."
+        )
+    else:
+        difficulty_instructions = (
+            "ADAPTIVE QUESTION DIFFICULTY: MEDIUM (Standard Mock Interview Depth)\n"
+            "Maintain standard mock interview depth: ask a well-scoped technical or behavioral question matching expected industry standards."
+        )
+
     role_domain = role or "Software Engineer"
     role_context_str = _ROLE_CONTEXT.get(role_domain, "")
     role_focus_block = f"\nROLE FOCUS AREAS & DOMAIN SPECIFICITY:\n{role_context_str}\n" if role_context_str else ""
@@ -165,7 +187,7 @@ def build_system_prompt(
     tot_turns = int(total_turns) if total_turns else 5
     conv_history = conversation_history.strip() if conversation_history else "None yet — this is the opening question."
 
-    prompt = f"""SYSTEM PROMPT — Resume & JD-Aware, Time-Calibrated Interview Question Generator
+    prompt = f"""SYSTEM PROMPT — Resume & JD-Aware, Adaptive Difficulty, Time-Calibrated Interview Question Generator
 
 ROLE
 You are a senior {role_domain} interviewer with 10+ years of experience
@@ -175,9 +197,14 @@ candidate has to answer it. You never ask a question that cannot be
 reasonably answered in the time given.
 
 ────────────────────────────────────────────────────────────
-STAGE 1 — ANALYZE CONTEXT & PERSONALIZATION
+STAGE 1A — ANALYZE CONTEXT & PERSONALIZATION
 ────────────────────────────────────────────────────────────
 {context_instructions}
+
+────────────────────────────────────────────────────────────
+STAGE 1B — ADAPTIVE DIFFICULTY CALIBRATION
+────────────────────────────────────────────────────────────
+{difficulty_instructions}
 
 ────────────────────────────────────────────────────────────
 STAGE 2 — GENERATE ONE TIME-CALIBRATED QUESTION
@@ -195,7 +222,7 @@ question you ask next. This is a hard constraint on question design:
 - Longer budget (>120s): ask a broader question inviting depth, but still ONE single question.
 
 QUESTION RULES
-1. Personalize using Stage 1 analysis (Resume ∩ JD intersection when both are available, JD requirements when JD-only, Resume content when Resume-only).
+1. Personalize using Stage 1A analysis and calibrate difficulty using Stage 1B instructions.
 2. Prefer following up on the candidate's last answer over introducing a new topic when the last answer left something worth probing.
 3. Do not repeat a question already asked in {conv_history}.
 4. Match tone and content to {role_domain}.
@@ -232,6 +259,115 @@ def build_scoring_prompt(session_id: str, role: str) -> str:
         f"{schema_str}\n\n"
         f'Use session_id="{session_id}".'
     )
+
+
+def build_coach_chat_prompt(history: list[dict], scorecard: dict) -> str:
+    """
+    Return system prompt for post-interview AI Coach chat grounded in transcript & scorecard.
+    """
+    import json  # noqa: PLC0415
+    transcript = format_history_for_prompt(history)
+    score_summary = json.dumps(scorecard, indent=2) if scorecard else "Scorecard unavailable."
+
+    return f"""SYSTEM PROMPT — AI Interview Feedback Coach
+
+ROLE
+You are an empathetic, expert AI Interview Coach. The candidate has just completed a mock interview session. Your job is to answer the candidate's follow-up questions about their performance, scores, and how to improve.
+
+SESSION TRANSCRIPT
+{transcript}
+
+RUBRIC SCORECARD & JUSTIFICATIONS
+{score_summary}
+
+RULES
+1. Ground your answers STRICTLY in the transcript and scorecard provided above. Reference specific quotes, turns, and dimension scores.
+2. If the user asks for advice on how to improve an answer, give actionable, concrete examples tailored to what they actually said.
+3. SCOPE CONSTRAINT: If the user asks a question completely unrelated to this interview session (e.g. general trivia, coding tasks unrelated to the interview, 'what is the capital of France?'), POLITELY REDIRECT them back to discussing their interview feedback. Do not answer off-topic queries."""
+
+
+def build_model_answers_prompt(
+    history: list[dict],
+    role: str,
+    resume_context: str | None = None,
+    jd_context: str | None = None,
+) -> str:
+    """
+    Return system prompt for generating 3-4 bullet point model answers for each interviewer question.
+    """
+    transcript = format_history_for_prompt(history)
+    ctx = ""
+    if resume_context and resume_context.strip():
+        ctx += f"\nResume Context: {resume_context[:400]}"
+    if jd_context and jd_context.strip():
+        ctx += f"\nJD Context: {jd_context[:400]}"
+
+    return f"""SYSTEM PROMPT — Model Answer Outline Generator
+
+ROLE
+You are a principal technical interviewer for {role} roles.{ctx}
+
+TRANSCRIPT
+{transcript}
+
+TASK
+For each question asked by the interviewer in the transcript above, generate 3-4 bullet points summarizing what a comprehensive, high-scoring model answer should include.
+
+OUTPUT FORMAT
+Return ONLY valid JSON matching this schema:
+{{
+  "model_answers": [
+    {{
+      "turn_index": 1,
+      "bullets": [
+        "Core technical foundation / direct definition",
+        "Key trade-offs, architecture, or edge cases",
+        "Practical implementation detail or real-world example"
+      ]
+    }}
+  ]
+}}"""
+
+
+def build_resume_improvement_prompt(
+    resume_text: str,
+    ats_info: dict,
+    scorecard: dict,
+) -> str:
+    """
+    Return system prompt for synthesizing ATS missing keywords + interview scorecard into resume rewrite suggestions.
+    """
+    import json  # noqa: PLC0415
+    missing = ", ".join((ats_info or {}).get("missing", [])) or "None identified."
+    score_summary = json.dumps(scorecard, indent=2) if scorecard else "None"
+
+    return f"""SYSTEM PROMPT — Resume Rewrite & Improvement Synthesizer
+
+ROLE
+You are an executive resume coach and senior technical interviewer.
+
+RESUME HIGHLIGHTS
+{resume_text[:1000]}
+
+ATS MISSING KEYWORDS
+{missing}
+
+INTERVIEW SCORECARD & FEEDBACK
+{score_summary}
+
+TASK
+Synthesize the candidate's ATS keyword gaps with their actual mock interview performance into 3-5 concrete, high-impact resume bullet point rewrite suggestions.
+For each suggestion, provide a revised bullet point or section addition that explicitly incorporates target skills they demonstrated or missed during the interview.
+
+OUTPUT FORMAT
+Return ONLY a valid JSON object matching this schema:
+{{
+  "suggestions": [
+    "Specific resume rewrite suggestion 1...",
+    "Specific resume rewrite suggestion 2...",
+    "Specific resume rewrite suggestion 3..."
+  ]
+}}"""
 
 
 def format_history_for_prompt(history: list[dict]) -> str:

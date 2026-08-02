@@ -25,6 +25,10 @@ def test_format_question_md():
     empty_formatted = _format_question_md("")
     assert "warning-box" in empty_formatted
 
+    # is_resume_anchored keyword argument support
+    anchored = _format_question_md("What is Python?", is_resume_anchored=True)
+    assert "Grounded in your resume" in anchored
+
 
 @patch("app.check_ollama_ready")
 @patch("app.get_next_question")

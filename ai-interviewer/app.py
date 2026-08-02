@@ -32,7 +32,15 @@ from typing import Any
 
 import gradio as gr
 
-from llm.client import check_ollama_ready, get_next_question, score_session
+from llm.client import (
+    ask_ai_coach,
+    assess_answer_quality_and_difficulty,
+    check_ollama_ready,
+    generate_model_answers,
+    generate_resume_improvements,
+    get_next_question,
+    score_session,
+)
 from memory.db import (
     add_turn,
     create_session,
@@ -138,6 +146,8 @@ def _new_state(
         "resume_context": resume_context,
         "jd_context": jd_context,
         "personalization_mode": personalization_mode,
+        "difficulty": "Medium",
+        "last_assessment": None,
         "pending_transcript": "",
     }
 
@@ -148,8 +158,14 @@ def _add_to_history(state: dict, speaker: str, content: str) -> None:
     add_turn(DB_PATH, session_id=state["session_id"], speaker=speaker, content=content)
 
 
-def _format_question_md(q: str, topic: str | None = None, personalization_mode: str | bool = "generic") -> str:
-    """Format question text, personalization badge, and optional probing chip for display in the Markdown component."""
+def _format_question_md(
+    q: str,
+    topic: str | None = None,
+    personalization_mode: str | bool = "generic",
+    difficulty: str = "Medium",
+    is_resume_anchored: bool = False,
+) -> str:
+    """Format question text, personalization badge, difficulty chip, and optional probing chip for display in the Markdown component."""
     if not q or not q.strip():
         return "<div class='warning-box'>⚠️ <strong>No question generated.</strong> Please check if Ollama is running.</div>"
     if q.startswith("⚠️") or q.startswith("Error") or "Error" in q:
@@ -157,18 +173,29 @@ def _format_question_md(q: str, topic: str | None = None, personalization_mode: 
     if q.startswith("###") or q.startswith("Session"):
         return q
 
+    if is_resume_anchored and personalization_mode == "generic":
+        personalization_mode = "resume_only"
+
     badges = []
+    diff_str = (difficulty or "Medium").capitalize()
+    if diff_str == "Hard":
+        badges.append("📈 **Escalated Depth (Advanced Probe)**")
+    elif diff_str == "Easy":
+        badges.append("🔍 **Calibrated Core Focus**")
+    else:
+        badges.append("🎯 **Standard Interview Depth**")
+
     if personalization_mode == "both":
         badges.append("📄 📋 **Grounded in your resume & Job Description**")
     elif personalization_mode == "jd_only":
         badges.append("📋 **Grounded in target Job Description**")
-    elif personalization_mode == "resume_only" or personalization_mode is True:
+    elif personalization_mode in ("resume_only", True):
         badges.append("📄 **Grounded in your resume**")
 
     if topic:
         badges.append(f"🔍 **Probing deeper on:** `{topic}`")
 
-    badge_md = ("\n\n".join(badges) + "\n\n") if badges else ""
+    badge_md = ("  •  ".join(badges) + "\n\n") if badges else ""
     return f"## 💬 Interviewer's Question\n\n{badge_md}### **{q}**"
 
 
@@ -572,7 +599,12 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
             "",
             stt_badge,
             fluency_badge,
-            _format_question_md(last_q, is_resume_anchored=is_anchored),
+            _format_question_md(
+                last_q,
+                personalization_mode=state.get("personalization_mode", "generic"),
+                difficulty=state.get("difficulty", "Medium"),
+                is_resume_anchored=is_anchored,
+            ),
             _question_audio_update(None),
             f"Question {state['turn_index'] + 1} of {max_turns}",
             False,
@@ -601,6 +633,13 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
         jd_ctx = state.get("jd_context")
         t_sec = state.get("timer_seconds", 90)
         cur_turn = state["turn_index"] + 1
+
+        # Assess answer quality and determine adaptive difficulty for next turn
+        curr_diff = state.get("difficulty", "Medium")
+        new_diff, quality_signal, reasoning = assess_answer_quality_and_difficulty(state["history"], curr_diff)
+        state["difficulty"] = new_diff
+        state["last_assessment"] = quality_signal
+
         question, topic = get_next_question(
             state["history"],
             state["role"],
@@ -609,6 +648,7 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
             time_allotted_seconds=t_sec,
             current_turn=cur_turn,
             total_turns=max_turns,
+            difficulty=new_diff,
         )
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
@@ -624,7 +664,8 @@ def process_answer(transcript_input: str | None, state: dict) -> tuple:
 
     turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
     mode = state.get("personalization_mode", "generic")
-    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, personalization_mode=mode), _question_audio_update(audio), turn_label, False
+    diff = state.get("difficulty", "Medium")
+    return state, transcript, stt_badge, fluency_badge, _format_question_md(question, topic, personalization_mode=mode, difficulty=diff), _question_audio_update(audio), turn_label, False
 
 
 def skip_question(state: dict) -> tuple:
@@ -646,6 +687,12 @@ def skip_question(state: dict) -> tuple:
         jd_ctx = state.get("jd_context")
         t_sec = state.get("timer_seconds", 90)
         cur_turn = state["turn_index"] + 1
+
+        curr_diff = state.get("difficulty", "Medium")
+        new_diff, quality_signal, reasoning = assess_answer_quality_and_difficulty(state["history"], curr_diff)
+        state["difficulty"] = new_diff
+        state["last_assessment"] = quality_signal
+
         question, topic = get_next_question(
             state["history"],
             state["role"],
@@ -654,6 +701,7 @@ def skip_question(state: dict) -> tuple:
             time_allotted_seconds=t_sec,
             current_turn=cur_turn,
             total_turns=max_turns,
+            difficulty=new_diff,
         )
         _add_to_history(state, "interviewer", question)
     except Exception as exc:
@@ -669,13 +717,46 @@ def skip_question(state: dict) -> tuple:
 
     turn_label = f"Question {state['turn_index'] + 1} of {max_turns}"
     mode = state.get("personalization_mode", "generic")
-    return state, "[skipped]", _format_question_md(question, topic, personalization_mode=mode), _question_audio_update(audio), turn_label, False
+    diff = state.get("difficulty", "Medium")
+    return state, "[skipped]", _format_question_md(question, topic, personalization_mode=mode, difficulty=diff), _question_audio_update(audio), turn_label, False
+
+
+def _format_full_transcript_with_model_answers(history: list[dict], model_answers: list[dict] | None = None) -> str:
+    """Format full transcript markdown with collapsible model answer accordions."""
+    if not history:
+        return "*No transcript available.*"
+
+    model_map = {}
+    if model_answers:
+        for item in model_answers:
+            t_idx = item.get("turn_index")
+            if t_idx:
+                model_map[t_idx] = item.get("bullets", [])
+
+    md_parts = []
+    interviewer_turn_count = 0
+    for t in history:
+        speaker = t.get("speaker")
+        content = t.get("content", "")
+        if speaker == "interviewer":
+            interviewer_turn_count += 1
+            md_parts.append(f"**Interviewer:** {content}")
+            bullets = model_map.get(interviewer_turn_count, [])
+            if bullets:
+                bullet_list_md = "\n".join(f"- {b}" for b in bullets)
+                md_parts.append(
+                    f"<details open><summary>💡 <strong>What a strong answer should include</strong></summary>\n\n"
+                    f"{bullet_list_md}\n</details>"
+                )
+        else:
+            md_parts.append(f"**Candidate:** {content}")
+    return "\n\n".join(md_parts)
 
 
 def generate_final_report(state: dict) -> tuple:
-    """Score the session with Gemma 4 and build the PDF report."""
+    """Score the session with Gemma 4, generate model answers, and build the PDF report."""
     if state is None:
-        return None, "No active session.", None, None, None, gr.update()
+        return None, "No active session.", None, None, None, gr.update(), gr.update(), "*No transcript available.*"
 
     end_session(state["session_id"], DB_PATH)
 
@@ -694,10 +775,25 @@ def generate_final_report(state: dict) -> tuple:
         note = f"⚙️ Standard Interview Session"
 
     scorecard["personalization_note"] = note
+    state["scorecard"] = scorecard
 
     ats_info = state.get("ats_info") or get_ats_score(state["session_id"], DB_PATH)
     if ats_info and ats_info.get("score") is not None:
         save_ats_score(state["session_id"], ats_info, DB_PATH)
+
+    model_answers = generate_model_answers(
+        state["history"],
+        state["role"],
+        resume_context=state.get("resume_context"),
+        jd_context=state.get("jd_context"),
+    )
+    state["model_answers"] = model_answers
+
+    resume_ctx = state.get("resume_context")
+    resume_improvements = []
+    if resume_ctx and resume_ctx.strip():
+        resume_improvements = generate_resume_improvements(resume_ctx, ats_info, scorecard)
+        state["resume_improvements"] = resume_improvements
 
     session_data = {
         "session_id": state["session_id"],
@@ -705,20 +801,29 @@ def generate_final_report(state: dict) -> tuple:
         "turns": state["history"],
         "scorecard": scorecard,
         "ats_info": ats_info,
+        "model_answers": model_answers,
+        "resume_improvements": resume_improvements,
     }
     pdf_path = generate_report(session_data)
+    transcript_md = _format_full_transcript_with_model_answers(state["history"], model_answers)
 
     # Build a markdown scorecard summary and Plotly figures
     summary_md = _format_scorecard_md(scorecard)
     fig_radar, fig_bar = _create_report_charts(scorecard)
 
+    report_sections = []
     if ats_info and ats_info.get("formatted_md"):
-        ats_report_md = f"## 🎯 Resume ATS Compatibility\n\n{ats_info['formatted_md']}"
-        ats_report_update = gr.update(value=ats_report_md, visible=True)
+        report_sections.append(f"## 🎯 Resume ATS Compatibility\n\n{ats_info['formatted_md']}")
+    if resume_improvements:
+        imp_bullets_md = "\n".join(f"- {imp}" for imp in resume_improvements)
+        report_sections.append(f"## 📄 Resume Improvement Suggestions\n\n*Synthesized from ATS analysis and live interview technical performance:*\n\n{imp_bullets_md}")
+
+    if report_sections:
+        ats_report_update = gr.update(value="\n\n---\n\n".join(report_sections), visible=True)
     else:
         ats_report_update = gr.update(value="", visible=False)
 
-    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report"), ats_report_update
+    return state, summary_md, fig_radar, fig_bar, str(pdf_path), gr.Tabs(selected="report"), ats_report_update, transcript_md
 
 
 def _create_report_charts(scorecard: dict):
@@ -846,9 +951,9 @@ def _format_scorecard_md(scorecard: dict) -> str:
         </div>\n"""
 
     if scorecard.get("summary"):
-        html += f'\n<div style="margin-top:16px; padding:16px; background:#161b22; border:1px solid #2d333b; border-radius:12px;">'
-        html += f'<div style="font-size:14px; font-weight:600; color:#e6edf3; margin-bottom:8px;">📝 Summary</div>'
-        html += f'<div style="font-size:14px; color:#8b949e; line-height:1.6;">{scorecard["summary"]}</div></div>'
+        html += f'\n<div class="summary-card">'
+        html += f'<div class="summary-title">📝 Summary</div>'
+        html += f'<div class="summary-text">{scorecard["summary"]}</div></div>'
 
     return html
 
@@ -921,45 +1026,15 @@ _THEME = gr.themes.Base(
 )
 
 
-_TOGGLE_JS = """
-() => {
-    const isLight = document.body.classList.toggle('light-mode');
-    try { localStorage.setItem('app-theme', isLight ? 'light' : 'dark'); } catch(e) {}
-    return isLight ? '🌙 Dark Mode' : '☀️ Light Mode';
-}
-"""
-
-_INIT_THEME_JS = """
-() => {
-    try {
-        if (localStorage.getItem('app-theme') === 'light') {
-            document.body.classList.add('light-mode');
-            const btn = document.querySelector('.theme-toggle-btn button') || document.querySelector('.theme-toggle-btn');
-            if (btn) btn.innerText = '🌙 Dark Mode';
-        }
-    } catch(e) {}
-}
-"""
-
-
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="Privacy-First AI Interviewer", theme=_THEME, css=_CSS) as demo:
 
-        # ── Header bar with offline badge & theme toggle ───────────────────────
-        with gr.Row(elem_classes=["header-bar"]):
-            gr.Markdown(
-                '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
-            )
-            theme_toggle_btn = gr.Button("☀️ Light Mode", size="sm", elem_classes=["theme-toggle-btn"])
+        # ── Header badge ──────────────────────────────────────────────────────
+        gr.Markdown(
+            '<div class="offline-badge">🔒 100% Offline — nothing you say leaves this device</div>',
+        )
 
         gr.Markdown("# 🎙️ Privacy-First AI Interviewer", elem_classes=["app-title"])
-
-        theme_toggle_btn.click(
-            fn=None,
-            js=_TOGGLE_JS,
-            outputs=[theme_toggle_btn],
-        )
-        demo.load(fn=None, js=_INIT_THEME_JS)
 
         # ── Session state ─────────────────────────────────────────────────────
         state = gr.State(None)
@@ -1155,10 +1230,50 @@ def build_ui() -> gr.Blocks:
 
                 pdf_download = gr.File(label="⬇️ Download PDF Report", visible=False)
 
+                gr.HTML('<hr class="section-divider">')
+                with gr.Group(elem_classes=["setup-card"]):
+                    gr.HTML("""<div class="setup-card-header">
+                        <div><div class="card-title">💬 AI Coach Follow-up Chat</div>
+                        <div class="card-subtitle">Ask Gemma 4 anything about your interview performance, scores, or how to improve specific answers</div></div>
+                    </div>""")
+                    coach_chatbot = gr.Chatbot(label="AI Coach", height=280, type="messages")
+                    with gr.Row():
+                        coach_input = gr.Textbox(
+                            show_label=False,
+                            placeholder="e.g. 'Why did I score low on Communication Clarity?' or 'How could I improve my answer to Q2?'",
+                            scale=4,
+                        )
+                        coach_send_btn = gr.Button("💬 Ask Coach", variant="primary", scale=1, elem_classes=["btn-primary"])
+
                 with gr.Row(elem_classes=["report-actions"]):
                     new_session_btn = gr.Button("🔄 Start New Session", variant="secondary", elem_classes=["btn-secondary"])
 
         # ── Event handlers ────────────────────────────────────────────────────
+
+        # Post-interview AI Coach chat
+        def _on_coach_chat(user_msg, chat_history, st):
+            if not user_msg or not user_msg.strip():
+                return chat_history or [], ""
+            chat_history = chat_history or []
+            chat_history.append({"role": "user", "content": user_msg.strip()})
+
+            history = (st or {}).get("history", [])
+            scorecard = (st or {}).get("scorecard", {})
+
+            bot_res = ask_ai_coach(history, scorecard, chat_history[:-1], user_msg)
+            chat_history.append({"role": "assistant", "content": bot_res})
+            return chat_history, ""
+
+        coach_send_btn.click(
+            fn=_on_coach_chat,
+            inputs=[coach_input, coach_chatbot, state],
+            outputs=[coach_chatbot, coach_input],
+        )
+        coach_input.submit(
+            fn=_on_coach_chat,
+            inputs=[coach_input, coach_chatbot, state],
+            outputs=[coach_chatbot, coach_input],
+        )
 
         # Stop-recording pipeline: transcript + optional signals.
         def _on_audio_change(audio, st):
@@ -1309,11 +1424,7 @@ def build_ui() -> gr.Blocks:
                 )
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
-                transcript_md = "\n\n".join(
-                    f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
-                    for t in (st or {}).get("history", [])
-                )
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
                 return (
                     st,
@@ -1393,11 +1504,7 @@ def build_ui() -> gr.Blocks:
             skip_visible = gr.update(visible=not finished)
 
             if finished:
-                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
-                transcript_md = "\n\n".join(
-                    f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
-                    for t in (st or {}).get("history", [])
-                )
+                st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
                 pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
                 return st, "[skipped]", question, audio_out, turn_lbl, finish_visible, submit_visible, skip_visible, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
 
@@ -1428,11 +1535,7 @@ def build_ui() -> gr.Blocks:
 
         # Finish & generate report
         def _on_finish(st):
-            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update = generate_final_report(st)
-            transcript_md = "\n\n".join(
-                f"**{'Interviewer' if t['speaker'] == 'interviewer' else 'Candidate'}:** {t['content']}"
-                for t in (st or {}).get("history", [])
-            )
+            st, scorecard, fig_radar, fig_bar, pdf_path, tab_update, ats_report_update, transcript_md = generate_final_report(st)
             pdf_visible = gr.update(value=pdf_path, visible=bool(pdf_path))
             return st, scorecard, fig_radar, fig_bar, transcript_md, pdf_visible, gr.update(value="", visible=False), tab_update, ats_report_update
 
