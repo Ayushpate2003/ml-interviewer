@@ -116,7 +116,14 @@ def detect_resume_role_and_highlights(
 
     # Limit prompt input length to 3000 chars for speed
     truncated_text = raw_text[:3000]
-    roles_list = valid_roles or ["Backend Engineer", "HR Round", "System Design"]
+    roles_list = valid_roles or [
+        "Backend Engineer",
+        "Frontend Engineer",
+        "DevOps / SRE",
+        "Cloud Computing",
+        "HR Round",
+        "System Design",
+    ]
     roles_formatted = ", ".join(f'"{r}"' for r in roles_list)
 
     prompt = (

@@ -28,7 +28,22 @@ _BASE_PERSONA = (
 _ROLE_CONTEXT: dict[str, str] = {
     "Backend Engineer": (
         "Focus areas: system design, APIs, databases, caching, concurrency, "
-        "reliability engineering, and debugging war stories."
+        "reliability engineering, microservices, and debugging war stories."
+    ),
+    "Frontend Engineer": (
+        "Focus areas: web performance optimization, DOM manipulation, state management (Redux/Zustand/Context), "
+        "JavaScript/TypeScript concepts, CSS architecture, browser storage, accessibility (a11y), responsive design, "
+        "component lifecycle, and security (XSS/CORS/CSRF)."
+    ),
+    "DevOps / SRE": (
+        "Focus areas: CI/CD automation pipelines, containerization & orchestration (Docker/Kubernetes), "
+        "infrastructure as code (Terraform/Ansible), monitoring/observability (Prometheus/Grafana), "
+        "incident management, high availability, zero-downtime deployments, and Linux systems tuning."
+    ),
+    "Cloud Computing": (
+        "Focus areas: cloud architecture (AWS/GCP/Azure), serverless functions, cloud security & IAM policies, "
+        "virtual networking (VPC, subnets, load balancing), cost optimization, multi-region failover, "
+        "disaster recovery, and cloud migration strategies."
     ),
     "HR Round": (
         "Focus areas: behavioural questions (STAR format), motivation, "
@@ -36,8 +51,8 @@ _ROLE_CONTEXT: dict[str, str] = {
     ),
     "System Design": (
         "Focus areas: large-scale distributed systems, capacity estimation, "
-        "trade-offs between consistency and availability, data modelling, "
-        "and architectural decision-making."
+        "trade-offs between consistency and availability (CAP theorem), data modelling, "
+        "message queues, and architectural decision-making."
     ),
 }
 
@@ -134,6 +149,8 @@ def build_system_prompt(
         resume_block = "No resume provided"
 
     role_domain = role or "Software Engineer"
+    role_context_str = _ROLE_CONTEXT.get(role_domain, "")
+    role_focus_block = f"\nROLE FOCUS AREAS & DOMAIN SPECIFICITY:\n{role_context_str}\n" if role_context_str else ""
     t_sec = int(time_allotted_seconds) if time_allotted_seconds else 90
     cur_turn = int(current_turn) if current_turn else 1
     tot_turns = int(total_turns) if total_turns else 5
@@ -143,8 +160,8 @@ def build_system_prompt(
 
 ROLE
 You are a senior {role_domain} interviewer with 10+ years of experience
-conducting structured mock interviews. Your defining skill is that you
-read a candidate's resume closely before you ever ask a question, and
+conducting structured mock interviews.{role_focus_block}
+Your defining skill is that you read a candidate's resume closely before you ever ask a question, and
 you calibrate every question to fit realistically within the time the
 candidate has to answer it. You never ask a question that cannot be
 reasonably answered in the time given.

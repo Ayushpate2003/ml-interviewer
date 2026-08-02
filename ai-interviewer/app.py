@@ -58,7 +58,14 @@ logger = logging.getLogger(__name__)
 MAX_TURNS = 5
 DB_PATH = Path(__file__).parent / "data" / "interview_sessions.db"
 
-ROLES = ["Backend Engineer", "HR Round", "System Design"]
+ROLES = [
+    "Backend Engineer",
+    "Frontend Engineer",
+    "DevOps / SRE",
+    "Cloud Computing",
+    "HR Round",
+    "System Design",
+]
 
 # ── Module init (loaded once at startup) ─────────────────────────────────────
 _STT_READY = False

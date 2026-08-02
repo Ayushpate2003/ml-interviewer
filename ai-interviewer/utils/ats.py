@@ -21,6 +21,24 @@ ROLE_KEYWORDS = {
         "ci/cd", "unit testing", "system design", "distributed systems", "kafka",
         "rabbitmq", "aws", "gcp"
     ],
+    "Frontend Engineer": [
+        "react", "next.js", "vue", "angular", "typescript", "javascript", "css", "html",
+        "html5", "css3", "tailwind", "sass", "redux", "zustand", "web performance",
+        "vite", "webpack", "responsive design", "accessibility", "a11y", "rest api",
+        "graphql", "dom", "browser security", "cross-browser"
+    ],
+    "DevOps / SRE": [
+        "docker", "kubernetes", "terraform", "ansible", "ci/cd", "github actions",
+        "jenkins", "prometheus", "grafana", "linux", "bash", "python", "helm",
+        "aws", "gcp", "azure", "observability", "incident management",
+        "infrastructure as code", "iac", "site reliability", "sre"
+    ],
+    "Cloud Computing": [
+        "aws", "gcp", "azure", "terraform", "iam", "vpc", "ec2", "s3", "lambda",
+        "serverless", "cloudformation", "kubernetes", "docker", "cloud security",
+        "load balancing", "cost optimization", "multi-region", "disaster recovery",
+        "cloud architecture", "cloud migration"
+    ],
     "System Design": [
         "scalability", "load balancing", "caching", "sharding", "replication",
         "microservices", "message queues", "kafka", "redis", "cdn",
@@ -95,6 +113,9 @@ def calculate_ats_score(
 
     role_jd_map = {
         "Backend Engineer": "Backend Engineer proficient in Python, Java, SQL, PostgreSQL, REST APIs, Microservices, Docker, Kubernetes, System Design, Caching, Git, CI/CD, Distributed Systems.",
+        "Frontend Engineer": "Frontend Engineer proficient in React, Next.js, TypeScript, JavaScript, CSS, HTML5, State Management, Web Performance, Responsive Design, Accessibility, REST APIs, GraphQL.",
+        "DevOps / SRE": "DevOps Engineer / SRE proficient in Docker, Kubernetes, Terraform, CI/CD pipelines, Linux, Prometheus, Grafana, Ansible, AWS, Infrastructure as Code, Observability, Incident Management.",
+        "Cloud Computing": "Cloud Architect / Computing Engineer proficient in AWS, GCP, Azure, Serverless Lambda, Terraform, VPC Networking, Cloud Security, IAM Policies, EC2, S3, Multi-region High Availability.",
         "System Design": "System Design Architect specializing in Scalability, Load Balancing, Caching, Sharding, Microservices, Message Queues, Fault Tolerance, Latency, Throughput, Database Indexing.",
         "HR Round": "HR Round candidate demonstrating Leadership, Teamwork, Communication, Conflict Resolution, Problem Solving, Adaptability, Collaboration, Agile Project Management.",
     }
